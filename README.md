@@ -8,7 +8,7 @@ component, protocol, network segment, and end-to-end request flow.
 
 ```text
 live encoder       origin             CDN PoP              ISP/access       home
-source ──RTMP──▶ server ──HTTP──▶ cdn edge ──▶ isp ──▶ home gateway ──┬─▶ client/player
+source ──RTMP──▶ server ──HTTP──▶ cdn edge ──▶ isp ──▶ home gateway ┬───▶ client/player
                                                                     └─▶ background traffic
   10.0.5.2         10.0.4.2          10.0.3.2       shaped last mile      10.0.1.2/.3
 ```
