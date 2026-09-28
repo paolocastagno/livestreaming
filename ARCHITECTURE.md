@@ -16,7 +16,13 @@ The system runs entirely in Docker. A containerized Kathará manager creates the
 device containers, Layer-2 collision domains, interfaces, routes, and traffic
 control queues. Kathará itself does not need to be installed on the host.
 
-## 2. End-to-end topology
+## 2. End-to-end topologies
+
+Scenario definitions are collected under `scenarios/`. They reuse the same
+container images and common startup resources, so changing the scenario alters
+the network and device population without changing the media pipeline.
+
+### 2.1 Single-ISP scenario
 
 ```text
                                       HTTP pull                         shaped residential path
@@ -49,7 +55,7 @@ control queues. Kathará itself does not need to be installed on the host.
                                                  └──────────────┘           └──────────────┘
 ```
 
-The topology contains five emulated Ethernet domains:
+The `single-isp` topology contains five emulated Ethernet domains:
 
 | Domain | Subnet | Attached components | Purpose |
 |---|---|---|---|
@@ -58,6 +64,44 @@ The topology contains five emulated Ethernet domains:
 | `BACKBONE` | `10.0.3.0/24` | CDN, ISP | CDN point-of-presence to provider/core connection |
 | `ACCESS` | `10.0.2.0/24` | ISP, home gateway | Residential WAN and shaped last mile |
 | `HOME` | `10.0.1.0/24` | home gateway, player, background client | Subscriber's local network |
+
+### 2.2 Multi-ISP scenario
+
+The `multi-isp` scenario keeps the encoder, origin, and CDN edge shared, then
+fans out into two provider and household paths:
+
+```text
+                                              shared PEERING LAN
+                                          ┌──────────────────────┐
+ source ──RTMP──▶ origin ◀──HTTP pull── CDN edge                │
+                                          │                      │
+                                          ├──▶ isp ──▶ home ─────┼──▶ client + background
+                                          │                      │
+                                          └──▶ isp2 ─▶ home2 ────┴──▶ client2 + background2
+```
+
+The diagram is logical: both provider routers and the CDN edge attach to the
+same emulated peering fabric, but traffic from each home follows only its own
+provider path. The domains added or changed relative to `single-isp` are:
+
+| Domain | Subnet | Attached components | Purpose |
+|---|---|---|---|
+| `PEERING` | `10.0.3.0/24` | CDN, ISP 1, ISP 2 | Shared CDN PoP/private-peering or IXP fabric |
+| `ACCESS` | `10.0.2.0/24` | ISP 1, home 1 | Independently shaped subscriber access path 1 |
+| `HOME` | `10.0.1.0/24` | home 1, client 1, background 1 | Subscriber LAN 1 |
+| `ACCESS2` | `10.1.2.0/24` | ISP 2, home 2 | Independently shaped subscriber access path 2 |
+| `HOME2` | `10.1.1.0/24` | home 2, client 2, background 2 | Subscriber LAN 2 |
+
+Static routes on the shared edge stand in for reachability normally exchanged
+with BGP. The lab does not attempt to model route selection or convergence.
+
+Sharing an off-net CDN PoP across providers is realistic: a CDN can peer with
+many networks at the same facility or exchange. Subscriber requests reach the
+same cache through different ISPs, so cache state and edge capacity are shared
+while access queues and cross traffic remain independent. An alternative
+production deployment places separate CDN appliances inside each ISP; that
+on-net-cache model would require one edge per provider and is outside these two
+scenarios.
 
 ## 3. Components
 
@@ -149,7 +193,7 @@ returns with a common timeline.
 Before live startup, the source verifies GPU visibility and the presence of
 `h264_nvenc` and `scale_cuda`. `./labctl gpu-check` additionally opens a real
 NVENC session for a one-frame test, catching driver/runtime mismatches before
-the seven-node topology is launched.
+the selected scenario is launched.
 
 FFmpeg classifies a build containing CUDA kernels produced by NVIDIA `nvcc` as
 nonfree. The GPU image is therefore a local experimental artifact and must not
@@ -265,15 +309,17 @@ The CDN also runs two iperf3 servers. Port 5201 supplies reverse-mode download
 traffic and port 5202 receives upload traffic. Separate ports allow simultaneous
 download and upload experiments.
 
-### 3.5 ISP/core router
+### 3.5 ISP/core routers
 
-The `isp` node forwards packets between the CDN-facing `BACKBONE` network and
-the residential `ACCESS` network. It is the downstream end of the emulated
-last mile.
+Each ISP node forwards packets between the CDN-facing backbone or peering
+network and its own residential access network. It is the downstream end of
+that emulated last mile. `single-isp` has `isp`; `multi-isp` has the independent
+`isp` and `isp2` paths.
 
-Download shaping is attached to `isp`'s egress interface toward the home. This
-placement is important: packets from both video delivery and background
-downloads enter the same queue before reaching the subscriber.
+Download shaping is attached to each ISP's egress interface toward its home.
+This placement is important: packets from video delivery and background
+downloads for one household enter the same queue before reaching that
+subscriber, without consuming the other ISP's access capacity.
 
 The CDN-to-ISP backbone adds a fixed 2 ms delay in each direction. This models
 a nearby CDN point of presence and provider transport separately from access
@@ -281,8 +327,9 @@ delay.
 
 ### 3.6 Residential gateway
 
-The `home` node connects the residential WAN (`10.0.2.2`) to the home LAN
-(`10.0.1.1`). It acts as the viewer's default gateway.
+Each home node connects a residential WAN to its home LAN and acts as that
+viewer's default gateway. The first path uses `home` at `10.0.2.2` and
+`10.0.1.1`; the second path uses `home2` at `10.1.2.2` and `10.1.1.1`.
 
 Upload shaping is attached to its WAN egress. The downlink is shaped at the ISP
 and the uplink at the home gateway, allowing realistic asymmetric capacity.
@@ -311,9 +358,11 @@ These are IP-path profiles. A 5G profile models the capacity, delay, and loss
 seen by an application; it does not emulate 5G radio scheduling, spectrum,
 mobility, RAN protocols, or a mobile core.
 
-### 3.7 Client and player
+### 3.7 Clients and player
 
-The `client` node is the end user's device at `10.0.1.2`. It runs:
+The `client` node is the first end user's device at `10.0.1.2`. In the
+multi-ISP scenario, `client2` provides an identical player at `10.1.1.2`. Each
+runs:
 
 - Chromium;
 - Xvfb, Fluxbox, x11vnc, and noVNC for a browser visible from the host;
@@ -339,10 +388,11 @@ and selects a representation that should fit the measured path. Changing an
 access profile or introducing competing traffic alters segment completion time,
 which causes ABR down-switches, buffer changes, or recovery to higher qualities.
 
-### 3.8 Background household client
+### 3.8 Background household clients
 
-The `background` node at `10.0.1.3` is a second device in the same home. It
-generates long-lived paced TCP flows to the CDN's iperf3 services.
+The `background` node at `10.0.1.3` is a second device in the first home. The
+multi-ISP scenario adds `background2` at `10.1.1.3`. Each generates long-lived
+paced TCP flows to the shared CDN's iperf3 services.
 
 It can generate:
 
@@ -351,10 +401,10 @@ It can generate:
 - simultaneous traffic in both directions;
 - preset or user-specified target rates.
 
-Since it is placed behind the same home gateway as the player, this traffic
-crosses exactly the same ISP and access queues as the media traffic. It models
-another household member downloading a game, synchronizing cloud data, or
-performing another sustained transfer.
+Since each generator is placed behind the same home gateway as its paired
+player, the traffic crosses exactly the same ISP and access queues as that
+player's media. It models another household member downloading a game,
+synchronizing cloud data, or performing another sustained transfer.
 
 ## 4. Playback request flow
 
@@ -369,7 +419,8 @@ A typical DASH playback follows these steps:
 6. It requests that Representation's initialization object and media segments.
 7. On the first request for each object, the CDN fetches it from the origin and
    stores it. Later requests for the same URL are edge cache hits.
-8. Responses traverse CDN → ISP → shaped downlink → home gateway → client.
+8. Responses traverse CDN → selected ISP → its shaped downlink → home gateway
+   → client.
 9. Shaka continuously updates its throughput estimate and may select another
    aligned Representation for a future segment.
 
@@ -378,18 +429,18 @@ shared audio playlist, and fMP4 media objects.
 
 ## 5. Startup and steady-state lifecycle
 
-`./labctl up` performs the following sequence:
+`./labctl up SCENARIO SOURCE_MODE` performs the following sequence:
 
 1. Prepare or reuse the six media renditions.
 2. Build the Kathará manager and all device images.
-3. Ask the containerized Kathará CLI to create the five collision domains and
-   seven devices.
+3. Assemble the selected scenario with the common startup resources, then ask
+   the containerized Kathará CLI to create all of its domains and devices.
 4. Configure addresses, routes, IP forwarding, policy routing, and the default
    4G queues through the device startup files.
 5. Start the origin's supervised nginx and packagers.
 6. Start the six source publishers after origin liveness is available.
 7. Start the CDN proxy/cache and both traffic servers.
-8. Start the client proxy, desktop services, and Chromium.
+8. Start every client proxy, desktop service, and Chromium instance.
 
 The origin clears previous live output during startup. There is no persistent
 DVR or archive. Once contribution data is flowing, the packagers need several
@@ -397,12 +448,15 @@ segments before both live manifests are ready.
 
 ## 6. Host access and policy routing
 
-Three devices also have Docker bridge interfaces for controlled host access:
+The origin, CDN, and every client also have Docker bridge interfaces for
+controlled host access:
 
 | Host port | Device/service | Path behavior |
 |---:|---|---|
 | 6080 | client noVNC | Carries only the remote display; browser media originates inside the lab |
 | 8088 | client reverse proxy | Host/LAN media requests are reopened by the client and cross the full emulated path |
+| 6081 | client2 noVNC (`multi-isp`) | Second remote display; browser media originates inside the lab |
+| 8089 | client2 reverse proxy (`multi-isp`) | Second host/LAN path through ISP 2 |
 | 8081 | CDN HTTP | Direct edge debugging; bypasses residential emulation |
 | 8080 | origin HTTP | Direct origin debugging; bypasses both CDN and residential emulation |
 
@@ -418,7 +472,8 @@ CDN nodes.
 
 ## 7. Validation and diagnostics
 
-`./labctl check` runs from the emulated client and verifies:
+`./labctl check` runs from every emulated client in the selected scenario and
+verifies:
 
 - the route and three-hop path to the CDN;
 - CDN and origin health;
@@ -451,7 +506,9 @@ The following are intentional simplifications:
   delay, encoder overload, GPU behavior, and content-aware bitrate allocation
   are not modeled.
 - RTMP is used for contribution instead of redundant SRT/RIST links.
-- There is one origin and one CDN edge, with no failover or multi-CDN steering.
+- There is one origin and one shared CDN edge, with no failover, per-ISP on-net
+  edge, or multi-CDN steering.
+- Static routing substitutes for Internet routing and BGP policy.
 - Delivery uses plain HTTP rather than TLS, HTTP/2, or HTTP/3.
 - The HLS and DASH packagers do not share one common set of CMAF media objects.
 - There is no DRM, ad insertion, authentication, DVR, or persistent recording.

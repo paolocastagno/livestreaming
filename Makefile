@@ -1,7 +1,10 @@
-.PHONY: help prepare prepare-gpu build build-gpu up up-gpu gpu-check down status check profile-fiber profile-5g profile-4g profile-dsl profile-congested profile-3g profile-bad traffic-off traffic-light traffic-medium traffic-heavy clean-media
+.PHONY: help scenarios prepare prepare-gpu build build-gpu up up-gpu up-multi-isp up-multi-isp-gpu gpu-check down status check profile-fiber profile-5g profile-4g profile-dsl profile-congested profile-3g profile-bad traffic-off traffic-light traffic-medium traffic-heavy clean-media
 
 help:
 	@./labctl help
+
+scenarios:
+	@./labctl scenarios
 
 prepare:
 	@./labctl prepare cpu
@@ -20,6 +23,12 @@ up:
 
 up-gpu:
 	@./labctl up gpu
+
+up-multi-isp:
+	@./labctl up multi-isp cpu
+
+up-multi-isp-gpu:
+	@./labctl up multi-isp gpu
 
 gpu-check:
 	@./labctl gpu-check

@@ -1,9 +1,9 @@
 # Adaptive live-streaming experiment
 
 This project is a reproducible testbed for observing adaptive live-video
-delivery under controlled residential-network conditions. It runs a complete
-streaming path—encoder, origin, CDN edge, ISP, home gateway, browser player, and
-competing household traffic—entirely in Docker/Kathará.
+delivery under controlled residential-network conditions. It runs complete
+streaming paths—encoder, origin, CDN edge, one or more ISPs, home gateways,
+browser players, and competing household traffic—entirely in Docker/Kathará.
 
 The testbed is intended for experiments with adaptive bitrate (ABR) selection,
 live latency, buffering, CDN caching, last-mile constraints, and cross traffic.
@@ -11,6 +11,8 @@ It provides the environment and controls without assuming a particular result.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of the
 components, protocols, network segments, and request flow.
+
+The default `single-isp` scenario is:
 
 ```text
 live encoder       origin             CDN PoP              ISP/access       home
@@ -83,6 +85,54 @@ Stop and remove the topology with:
 ./labctl down
 ```
 
+## Scenarios
+
+All scenario definitions live under `scenarios/`:
+
+| Scenario | Topology |
+|---|---|
+| `single-isp` | One content provider, one CDN edge, and one residential ISP path |
+| `multi-isp` | The same content provider and CDN edge shared by two independent ISP and household paths |
+
+List or launch them with:
+
+```bash
+./labctl scenarios
+./labctl validate multi-isp cpu
+./labctl up single-isp cpu
+./labctl up multi-isp cpu
+```
+
+`up` remains a single command: it prepares media, builds the required images,
+and starts every device in the selected scenario. `./labctl up cpu` is retained
+as shorthand for `./labctl up single-isp cpu`.
+
+In `multi-isp`, both providers peer with the same off-net CDN edge on a common
+peering network, while each provider has its own access link, gateway, player,
+and background-traffic device:
+
+```text
+                                      ┌── isp ── home ── client/background
+source ──▶ origin ──▶ shared CDN edge ┤
+                                      └── isp2 ─ home2 ─ client2/background2
+```
+
+This is realistic when a CDN PoP connects to several networks through private
+peering or an Internet exchange. Strictly speaking, the ISPs do not “get the
+live stream”; viewers request it from the CDN and the response traverses their
+ISP. Large access networks may instead host dedicated on-net CDN caches. That
+alternative is deliberately not modeled here. A useful consequence of the
+shared-edge design is that a request through one ISP can warm the cache for the
+other ISP, which is realistic for a shared PoP and should be considered when
+interpreting results.
+
+The two multi-ISP players are exposed separately:
+
+| Household | noVNC browser | Shaped host/LAN endpoint |
+|---|---|---|
+| ISP 1 | <http://localhost:6080/vnc.html?autoconnect=true&resize=scale> | <http://localhost:8088/> |
+| ISP 2 | <http://localhost:6081/vnc.html?autoconnect=true&resize=scale> | <http://localhost:8089/> |
+
 ## Reference experiment
 
 The following procedure provides a repeatable starting point for observing ABR
@@ -153,6 +203,14 @@ CDN/backbone side adds another fixed 2 ms each way.
 ./labctl profile clear
 ```
 
+In a multi-household scenario, controls apply to every household by default.
+Pass a 1-based household number or device name to target just one path:
+
+```bash
+./labctl profile fiber isp
+./labctl profile congested isp2
+```
+
 These profiles reproduce application-visible IP conditions, not radio
 scheduling, a 5G core, or DOCSIS/DSL framing.
 
@@ -172,6 +230,14 @@ downlink and uplink queues.
 ./labctl traffic both 10M       # one flow in each direction
 ./labctl traffic status
 ./labctl traffic off
+```
+
+The optional final selector also isolates cross traffic to one household:
+
+```bash
+./labctl traffic heavy isp2
+./labctl traffic download 35M isp
+./labctl traffic off all
 ```
 
 A target above the current access capacity intentionally saturates that link.
@@ -210,7 +276,9 @@ not redistribute the binary image.
 ./labctl logs
 ./labctl shell cdn
 ./labctl exec client traceroute -n 10.0.3.2
+./labctl exec client2 traceroute -n 10.0.3.2  # multi-isp
 ./labctl exec isp tc -s qdisc show dev eth1
+./labctl exec isp2 tc -s qdisc show dev eth1  # multi-isp
 ./labctl exec home tc -s qdisc show dev eth0
 ./labctl exec background /usr/local/bin/background-traffic status
 ```
@@ -234,17 +302,17 @@ Inside the topology:
 
 ## Reproducibility and limits
 
-The topology, media preparation, service configuration, network profiles, and
-validation are version controlled and invoked through `labctl`. Reproducing a
-run requires the same repository revision, source mode, protocol, access
-profile, traffic setting, and timing. Random packet loss and host scheduling
-can still introduce run-to-run variation, so quantitative comparisons should
-use repeated runs.
+The scenarios, media preparation, service configuration, network profiles,
+and validation are version controlled and invoked through `labctl`.
+Reproducing a run requires the same repository revision, scenario, source
+mode, protocol, per-ISP access profiles, traffic settings, and timing. Random
+packet loss and host scheduling can still introduce run-to-run variation, so
+quantitative comparisons should use repeated runs.
 
 CPU mode republishes an offline-encoded ladder and therefore does not model
-encoder delay or overload. The testbed also uses one origin, one CDN edge,
-plain HTTP, and application-level network shaping. Conclusions should remain
-within those boundaries.
+encoder delay or overload. The testbed also uses one origin, one shared CDN
+edge, static routing, plain HTTP, and application-level network shaping.
+Conclusions should remain within those boundaries.
 
 ## Build and maintenance
 
@@ -272,7 +340,8 @@ diagnostic port (8081) publicly.
 ## Repository layout
 
 - `ARCHITECTURE.md` — topology, components, protocols, and request lifecycle.
-- `lab/` — seven-node topology, routes, and last-mile shapers.
+- `scenarios/` — selectable single-ISP and multi-ISP topology definitions.
+- `lab/` — startup files and last-mile shapers shared by the scenarios.
 - `docker/source/` — paced portable contribution publishers.
 - `docker/source-gpu/` — live NVDEC/CUDA/NVENC encoder.
 - `docker/server/` — RTMP ingest, HLS/DASH packagers, and player.

@@ -13,7 +13,12 @@ bash -n labctl docker/media-prep/prepare-media.sh \
   lab/source.startup lab/server.startup lab/cdn.startup lab/isp.startup \
   lab/home.startup lab/client.startup lab/background.startup \
   lab/isp/usr/local/sbin/set-access-link \
-  lab/home/usr/local/sbin/set-access-link
+  lab/home/usr/local/sbin/set-access-link \
+  scenarios/multi-isp/cdn.startup scenarios/multi-isp/isp2.startup \
+  scenarios/multi-isp/home2.startup scenarios/multi-isp/client2.startup \
+  scenarios/multi-isp/background2.startup \
+  scenarios/multi-isp/isp2/usr/local/sbin/set-access-link \
+  scenarios/multi-isp/home2/usr/local/sbin/set-access-link
 
 for file in \
   ARCHITECTURE.md \
@@ -29,8 +34,12 @@ for file in \
   docker/client/Dockerfile \
   docker/client/nginx.conf \
   docker/traffic/Dockerfile \
-  lab/lab.conf \
-  lab/lab.gpu.conf \
+  scenarios/single-isp/scenario.conf \
+  scenarios/single-isp/lab.conf \
+  scenarios/single-isp/lab.gpu.conf \
+  scenarios/multi-isp/scenario.conf \
+  scenarios/multi-isp/lab.conf \
+  scenarios/multi-isp/lab.gpu.conf \
   lab/source.startup \
   lab/server.startup \
   lab/cdn.startup \
@@ -41,14 +50,17 @@ for file in \
   test -s "$file"
 done
 
-grep -q 'livestreaming/server:local' lab/lab.conf
-grep -q 'livestreaming/source:local' lab/lab.conf
-grep -q 'livestreaming/source-gpu:local' lab/lab.gpu.conf
-grep -q 'source\[gpus\]="0"' lab/lab.gpu.conf
-grep -q 'source\[cpuset_cpus\]="16-23"' lab/lab.gpu.conf
-grep -q 'livestreaming/cdn:local' lab/lab.conf
-grep -q 'livestreaming/traffic:local' lab/lab.conf
-grep -q 'livestreaming/client:local' lab/lab.conf
+grep -q 'livestreaming/server:local' scenarios/single-isp/lab.conf
+grep -q 'livestreaming/source:local' scenarios/single-isp/lab.conf
+grep -q 'livestreaming/source-gpu:local' scenarios/single-isp/lab.gpu.conf
+grep -q 'source\[gpus\]="0"' scenarios/single-isp/lab.gpu.conf
+grep -q 'source\[cpuset_cpus\]="16-23"' scenarios/single-isp/lab.gpu.conf
+grep -q 'livestreaming/cdn:local' scenarios/multi-isp/lab.conf
+grep -q 'livestreaming/traffic:local' scenarios/multi-isp/lab.conf
+grep -q 'livestreaming/client:local' scenarios/multi-isp/lab.conf
+grep -q 'isp2\[0\]="PEERING"' scenarios/multi-isp/lab.conf
+grep -q 'client2\[port\]="8089:8088/tcp"' scenarios/multi-isp/lab.conf
+grep -q '10.1.1.0/24 via 10.0.3.3' scenarios/multi-isp/cdn.startup
 grep -q 'dash/manifest.mpd' docker/server/web/player.js
 grep -q 'hls/master.m3u8' docker/server/web/player.js
 grep -q 'glass-half-2160p.mp4' docker/source/Dockerfile
@@ -56,6 +68,9 @@ grep -q 'h264_nvenc' docker/source-gpu/start-publishers
 grep -q 'scale_cuda' docker/source-gpu/start-publishers
 grep -q 'DeviceRequest' docker/kathara/patch-docker-resources.py
 grep -q 'gpu-check' labctl
+grep -q 'up \[SCENARIO\] \[cpu|gpu\]' labctl
+grep -q 'SCENARIO_CHECK_OK' labctl
+grep -q 'lstart --print' labctl
 grep -q '100mbit 20mbit 10ms 0.05%' labctl
 grep -q 'proxy_cache media' docker/cdn/nginx.conf
 grep -q 'sfq quantum 1514 perturb' lab/isp/usr/local/sbin/set-access-link
