@@ -1,0 +1,6 @@
+.git
+.DS_Store
+media/generated/source/
+!media/generated/source/
+!media/generated/source/glass-half-2160p.webm
+media/generated/*.txt

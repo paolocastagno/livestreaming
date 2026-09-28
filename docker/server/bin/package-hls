@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly RTMP=rtmp://127.0.0.1:1935/ingest
+readonly OUT=/srv/stream/hls
+
+input_args=()
+for quality in 240p 360p 480p 720p 1080p 2160p; do
+  input_args+=( -thread_queue_size 1024 -i "$RTMP/glass-half-${quality}" )
+done
+
+# One shared audio rendition avoids downloading six duplicate audio tracks.
+exec ffmpeg -hide_banner -loglevel warning \
+  "${input_args[@]}" \
+  -map 0:v:0 -map 1:v:0 -map 2:v:0 -map 3:v:0 -map 4:v:0 -map 5:v:0 \
+  -map 0:a:0 -c copy \
+  -f hls -hls_time 4 -hls_list_size 8 \
+  -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
+  -hls_flags delete_segments+independent_segments+program_date_time+temp_file \
+  -master_pl_name master.m3u8 \
+  -var_stream_map 'v:0,agroup:audio,name:240p v:1,agroup:audio,name:360p v:2,agroup:audio,name:480p v:3,agroup:audio,name:720p v:4,agroup:audio,name:1080p v:5,agroup:audio,name:2160p a:0,agroup:audio,default:yes,name:audio' \
+  "$OUT/%v/index.m3u8"

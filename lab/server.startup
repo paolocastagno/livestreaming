@@ -1,0 +1,13 @@
+ip address add 10.0.5.1/24 dev eth0
+ip address add 10.0.4.2/24 dev eth1
+ip link set eth0 up
+ip link set eth1 up
+ip route replace default via 10.0.4.1
+
+# Preserve the Docker bridge as the return path for localhost:8080 only.
+bridge_ip="$(ip -o -4 address show dev eth2 | awk '{print $4}' | cut -d/ -f1)"
+bridge_gateway="${bridge_ip%.*}.1"
+ip route replace default via "$bridge_gateway" dev eth2 table 100
+ip rule add from "$bridge_ip/32" table 100
+
+/usr/local/bin/start-live >/var/log/streaming/startup.log 2>&1

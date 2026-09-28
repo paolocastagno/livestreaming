@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly ORIGIN=http://10.0.5.1
+readonly RTMP_BASE=rtmp://10.0.5.1:1935/ingest
+readonly MEDIA=/opt/media
+readonly LOG=/var/log/streaming
+
+mkdir -p "$LOG"
+
+for _ in $(seq 1 60); do
+  if curl --fail --silent "$ORIGIN/healthz" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+curl --fail --silent "$ORIGIN/healthz" >/dev/null
+
+publish_forever() {
+  local quality=$1
+  while true; do
+    ffmpeg -hide_banner -loglevel warning -re -stream_loop -1 \
+      -i "$MEDIA/glass-half-${quality}.mp4" \
+      -map 0:v:0 -map 0:a:0 -c copy -f flv \
+      "$RTMP_BASE/glass-half-${quality}" \
+      >>"$LOG/${quality}.log" 2>&1 || true
+    sleep 1
+  done
+}
+
+for quality in 240p 360p 480p 720p 1080p 2160p; do
+  publish_forever "$quality" &
+  echo $! >"$LOG/${quality}.pid"
+done
+
+echo "Six live RTMP contribution renditions are publishing to the origin."
+wait

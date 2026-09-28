@@ -1,0 +1,13 @@
+ip address add 10.0.1.2/24 dev eth0
+ip link set eth0 up
+ip route replace default via 10.0.1.1
+
+# Keep replies to host-published ports on Docker's bridge.  Requests to the
+# CDN use 10.0.1.2 and therefore continue through the full emulated path.
+bridge_ip="$(ip -o -4 address show dev eth1 | awk '{print $4}' | cut -d/ -f1)"
+bridge_gateway="${bridge_ip%.*}.1"
+ip route replace default via "$bridge_gateway" dev eth1 table 100
+ip rule add from "$bridge_ip/32" table 100
+
+nginx
+/usr/local/bin/start-browser >/var/log/start-browser.log 2>&1 &

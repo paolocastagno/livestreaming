@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly EDGE=http://10.0.3.2
+
+echo "Route to CDN edge:"
+ip route get 10.0.3.2
+traceroute -n -m 6 10.0.3.2 || true
+
+echo
+echo "Waiting for CDN, origin, and live manifests..."
+curl --fail --silent --retry 20 --retry-delay 1 --retry-all-errors "$EDGE/edge-healthz"
+curl --fail --silent --retry 20 --retry-delay 1 --retry-all-errors "$EDGE/origin-healthz"
+curl --fail --silent --retry 45 --retry-delay 1 --retry-all-errors "$EDGE/hls/master.m3u8" > /tmp/master.m3u8
+curl --fail --silent --retry 45 --retry-delay 1 --retry-all-errors "$EDGE/dash/manifest.mpd" > /tmp/manifest.mpd
+
+grep -q '#EXT-X-STREAM-INF' /tmp/master.m3u8
+grep -q '<MPD' /tmp/manifest.mpd
+
+variants=$(grep -c '#EXT-X-STREAM-INF' /tmp/master.m3u8)
+representations=$(grep -o '<Representation' /tmp/manifest.mpd | wc -l | tr -d ' ')
+
+[[ "$variants" -eq 6 ]] || { echo "Expected 6 HLS variants, got $variants." >&2; exit 1; }
+[[ "$representations" -eq 7 ]] || { echo "Expected 7 DASH audio/video representations, got $representations." >&2; exit 1; }
+grep -q 'RESOLUTION=3840x2160' /tmp/master.m3u8
+grep -Eq 'width="3840"[^>]*height="2160"|height="2160"[^>]*width="3840"' /tmp/manifest.mpd
+
+echo "HLS:  OK ($variants variants)"
+echo "DASH: OK ($representations audio/video representations)"
+
+timeout 25 ffprobe -v error -select_streams v:0 \
+  -show_entries stream=codec_name,width,height -of csv=p=0 \
+  "$EDGE/hls/240p/index.m3u8" > /tmp/hls-codec.csv
+timeout 25 ffprobe -v error -select_streams v:0 \
+  -show_entries stream=codec_name,width,height -of csv=p=0 \
+  "$EDGE/dash/manifest.mpd" > /tmp/dash-codec.csv
+grep -q '^h264,426,240' /tmp/hls-codec.csv
+grep -q '^h264,426,240' /tmp/dash-codec.csv
+echo "Media fetch/decode probe: OK (H.264 426x240 through HLS and DASH)"
+
+variant_uri=$(awk '!/^#/ && NF {print; exit}' /tmp/master.m3u8 | tr -d '\r')
+curl --fail --silent --show-error "$EDGE/hls/$variant_uri" > /tmp/variant.m3u8
+segment_uri=$(awk '!/^#/ && /\.m4s/ {print; exit}' /tmp/variant.m3u8 | tr -d '\r')
+variant_dir=${variant_uri%/*}
+segment_url="$EDGE/hls/$variant_dir/$segment_uri?cache-probe=1"
+curl --fail --silent --show-error --dump-header /tmp/cache-first.headers --output /dev/null "$segment_url"
+curl --fail --silent --show-error --dump-header /tmp/cache-second.headers --output /dev/null "$segment_url"
+grep -qi '^X-Cache-Status: HIT' /tmp/cache-second.headers
+echo "CDN edge: OK (manifest bypass and segment cache HIT)"
+echo
+echo "Household access path: client -> home gateway -> ISP -> CDN edge"
+
+echo 'STREAM_CHECK_OK'

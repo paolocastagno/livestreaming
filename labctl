@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly CPU_LAB_DIR=/workspace/lab
+readonly GPU_LAB_DIR=/workspace/.runtime/lab-gpu
+readonly RUNTIME_DIR="$PROJECT_DIR/.runtime"
+readonly ACTIVE_MODE_FILE="$RUNTIME_DIR/source-mode"
+readonly PLAYER_URL='http://localhost:6080/vnc.html?autoconnect=true&resize=scale'
+readonly SHAPED_STREAM_URL='http://localhost:8088/'
+
+compose() {
+  docker compose --project-directory "$PROJECT_DIR" "$@"
+}
+
+kathara() {
+  compose run --rm kathara "$@"
+}
+
+active_mode() {
+  local mode=cpu
+  if [[ -s "$ACTIVE_MODE_FILE" ]]; then
+    read -r mode <"$ACTIVE_MODE_FILE"
+  fi
+  case "$mode" in
+    cpu|gpu) printf '%s\n' "$mode" ;;
+    *) printf '%s\n' cpu ;;
+  esac
+}
+
+lab_dir() {
+  if [[ "$(active_mode)" == gpu ]]; then
+    printf '%s\n' "$GPU_LAB_DIR"
+  else
+    printf '%s\n' "$CPU_LAB_DIR"
+  fi
+}
+
+prepare_gpu_lab() {
+  local target="$RUNTIME_DIR/lab-gpu"
+  mkdir -p "$RUNTIME_DIR"
+  rm -rf "$target"
+  mkdir -p "$target"
+  cp -R "$PROJECT_DIR/lab/." "$target/"
+  cp "$PROJECT_DIR/lab/lab.gpu.conf" "$target/lab.conf"
+}
+
+select_mode() {
+  local mode=$1
+  case "$mode" in
+    cpu) ;;
+    gpu) prepare_gpu_lab ;;
+    *) echo "Unknown source mode '$mode'. Choose cpu or gpu." >&2; exit 2 ;;
+  esac
+  mkdir -p "$RUNTIME_DIR"
+  printf '%s\n' "$mode" >"$ACTIVE_MODE_FILE"
+}
+
+need_docker() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker is not reachable. Start Docker Desktop (or the Docker daemon) and retry." >&2
+    exit 1
+  fi
+}
+
+need_media() {
+  local root
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/media/generated/variants"
+  local quality
+  for quality in 240p 360p 480p 720p 1080p 2160p; do
+    if [[ ! -s "$root/glass-half-${quality}.mp4" ]]; then
+      echo "Missing generated media. Run './labctl prepare' first." >&2
+      exit 1
+    fi
+  done
+}
+
+need_gpu_media() {
+  local source="$PROJECT_DIR/media/generated/source/glass-half-2160p.webm"
+  if [[ ! -s "$source" ]]; then
+    echo "Missing native 4K source. Run './labctl prepare gpu' first." >&2
+    exit 1
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Container-only Kathara adaptive streaming lab
+
+Usage: ./labctl COMMAND [ARGS]
+
+  up [cpu|gpu]        Prepare/build images, then start with the selected source
+  down                Stop this Kathara lab
+  prepare [cpu|gpu]   Prepare the CPU ladder or native 4K GPU source
+  build [cpu|gpu]     Build images for the selected source mode
+  gpu-check           Verify GPU access, FFmpeg, and one NVENC encode
+  mode                Show the active source mode and Kathara lab directory
+  status              Show Kathara device status and topology
+  check               Test routing, HLS/DASH, and CDN caching
+  profile NAME        Apply fiber, 5g, 4g, dsl, congested, bad, or clear
+  traffic PRESET      Set off, light, medium, heavy, upload, or status traffic
+  traffic DIR RATE    Start custom download, upload, or both traffic (e.g. 30M)
+  shell DEVICE        Open a shell in any lab device
+  exec DEVICE CMD...  Run a command in a device
+  logs                Tail server and packager logs
+  clean-media         Remove generated media after confirmation
+  help                Show this message
+
+The visual player is at:
+  http://localhost:6080/vnc.html?autoconnect=true&resize=scale
+
+The host/LAN player whose media traverses the emulated link is at:
+  http://localhost:8088/
+
+The origin debug endpoint is at http://localhost:8080 and the CDN edge debug
+endpoint is at http://localhost:8081. Both bypass the residential access path.
+EOF
+}
+
+case "${1:-help}" in
+  prepare)
+    need_docker
+    compose build media-prep
+    case "${2:-cpu}" in
+      cpu) compose run --rm media-prep all ;;
+      gpu) compose run --rm media-prep source-only ;;
+      *) echo "Choose cpu or gpu." >&2; exit 2 ;;
+    esac
+    ;;
+  build)
+    need_docker
+    case "${2:-cpu}" in
+      cpu)
+        need_media
+        compose build kathara stream-source stream-server cdn-edge stream-client traffic-client
+        ;;
+      gpu)
+        need_gpu_media
+        compose build kathara stream-source-gpu stream-server cdn-edge stream-client traffic-client
+        ;;
+      *) echo "Choose cpu or gpu." >&2; exit 2 ;;
+    esac
+    ;;
+  up)
+    need_docker
+    source_mode=${2:-cpu}
+    select_mode "$source_mode"
+    "$0" prepare "$source_mode"
+    "$0" build "$source_mode"
+    kathara lstart --noterminals --no-shared -d "$(lab_dir)"
+    echo
+    echo "Lab started with the $source_mode source. Give the live packagers about 10 seconds, then open:"
+    echo "  $PLAYER_URL"
+    echo
+    echo "Or open the shaped host/LAN endpoint:"
+    echo "  $SHAPED_STREAM_URL"
+    echo
+    echo "Try './labctl profile 5g' and './labctl traffic heavy' while video is playing."
+    ;;
+  down)
+    need_docker
+    kathara lclean -d "$(lab_dir)"
+    ;;
+  status)
+    need_docker
+    echo "Source mode: $(active_mode)"
+    kathara linfo -d "$(lab_dir)" --topology
+    ;;
+  check)
+    need_docker
+    output="$(kathara exec --wait -d "$(lab_dir)" client -- /usr/local/bin/check-streams)"
+    printf '%s\n' "$output"
+    if ! grep -q '^STREAM_CHECK_OK$' <<<"$output"; then
+      echo "Stream validation failed inside the emulated client." >&2
+      exit 1
+    fi
+    ;;
+  profile)
+    need_docker
+    case "${2:-}" in
+      fiber)     args=(300mbit 100mbit 3ms 0.001%) ;;
+      5g)        args=(100mbit 20mbit 10ms 0.05%) ;;
+      4g)        args=(20mbit 5mbit 25ms 0.2%) ;;
+      dsl)       args=(15mbit 1mbit 15ms 0.05%) ;;
+      congested) args=(5mbit 1mbit 50ms 1%) ;;
+      3g)        args=(1500kbit 500kbit 60ms 1%) ;;
+      bad)       args=(600kbit 256kbit 150ms 3%) ;;
+      clear)     args=(clear clear 0ms 0%) ;;
+      *)
+        echo "Unknown profile '${2:-}'. Choose: fiber, 5g, 4g, dsl, congested, 3g, bad, clear." >&2
+        exit 2
+        ;;
+    esac
+    if [[ "${args[0]}" == clear ]]; then
+      kathara exec --wait -d "$(lab_dir)" isp -- /usr/local/sbin/set-access-link eth1 clear
+      kathara exec --wait -d "$(lab_dir)" home -- /usr/local/sbin/set-access-link eth0 clear
+    else
+      kathara exec --wait -d "$(lab_dir)" isp -- /usr/local/sbin/set-access-link eth1 "${args[0]}" "${args[2]}" "${args[3]}"
+      kathara exec --wait -d "$(lab_dir)" home -- /usr/local/sbin/set-access-link eth0 "${args[1]}" "${args[2]}" "${args[3]}"
+      echo "Access profile '${2}': down=${args[0]} up=${args[1]} access-delay=${args[2]}/direction loss=${args[3]}"
+    fi
+    ;;
+  traffic)
+    need_docker
+    case "${2:-status}" in
+      off)      traffic_args=(stop) ;;
+      status)   traffic_args=(status) ;;
+      light)    traffic_args=(start download 5M) ;;
+      medium)   traffic_args=(start download 20M) ;;
+      heavy)    traffic_args=(start download 80M) ;;
+      upload)
+        if [[ -n "${3:-}" ]]; then traffic_args=(start upload "${3}"); else traffic_args=(start upload 10M); fi
+        ;;
+      download|both)
+        [[ -n "${3:-}" ]] || { echo "Usage: ./labctl traffic ${2} RATE" >&2; exit 2; }
+        traffic_args=(start "${2}" "${3}")
+        ;;
+      *)
+        echo "Unknown traffic mode '${2:-}'. Choose off, light, medium, heavy, upload, status, download RATE, or both RATE." >&2
+        exit 2
+        ;;
+    esac
+    kathara exec --wait -d "$(lab_dir)" background -- /usr/local/bin/background-traffic "${traffic_args[@]}"
+    ;;
+  shell)
+    need_docker
+    case "${2:-}" in source|server|cdn|isp|home|client|background) ;;
+      *) echo "Choose source, server, cdn, isp, home, client, or background." >&2; exit 2 ;;
+    esac
+    kathara connect -d "$(lab_dir)" "${2}"
+    ;;
+  exec)
+    need_docker
+    [[ $# -ge 3 ]] || { echo "Usage: ./labctl exec DEVICE COMMAND..." >&2; exit 2; }
+    device=$2
+    shift 2
+    kathara exec --wait -d "$(lab_dir)" "$device" -- "$@"
+    ;;
+  logs)
+    need_docker
+    echo "===== source contribution publishers ====="
+    kathara exec --wait -d "$(lab_dir)" source -- sh -c 'tail -n 8 /var/log/streaming/*.log 2>/dev/null || true'
+    echo "===== origin ====="
+    kathara exec --wait -d "$(lab_dir)" server -- /usr/local/bin/show-stream-logs
+    echo "===== CDN edge ====="
+    kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tail -n 30 /var/log/nginx/error.log /var/log/iperf3-*.log 2>/dev/null || true'
+    ;;
+  gpu-check)
+    need_docker
+    need_gpu_media
+    if ! docker image inspect livestreaming/source-gpu:local >/dev/null 2>&1; then
+      echo "Missing GPU source image. Run './labctl build gpu' first." >&2
+      exit 1
+    fi
+    docker run --rm --gpus device=0 \
+      --entrypoint /usr/local/bin/start-publishers \
+      livestreaming/source-gpu:local --check
+    ;;
+  mode)
+    echo "Source mode: $(active_mode)"
+    echo "Kathara lab: $(lab_dir)"
+    ;;
+  clean-media)
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/media/generated"
+    read -r -p "Remove downloaded and encoded media under $root? [y/N] " answer
+    if [[ "$answer" == y || "$answer" == Y ]]; then
+      find "$root" -mindepth 1 ! -name .gitkeep -delete
+      echo "Generated media removed; it can be recreated with './labctl prepare'."
+    fi
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

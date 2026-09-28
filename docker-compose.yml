@@ -1,0 +1,65 @@
+name: livestreaming-lab
+
+services:
+  kathara:
+    image: livestreaming/kathara-cli:3.8.3
+    # Kathara includes the manager hostname in its ownership label. Keeping it
+    # stable lets separate `docker compose run` commands manage the same lab.
+    hostname: livestreaming-kathara-manager
+    build:
+      context: docker/kathara
+    working_dir: /workspace
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace:ro
+    profiles: [tools]
+
+  media-prep:
+    image: livestreaming/media-prep:local
+    build:
+      context: docker/media-prep
+    volumes:
+      - ./media/generated:/output
+    profiles: [tools]
+
+  stream-server:
+    image: livestreaming/server:local
+    build:
+      context: .
+      dockerfile: docker/server/Dockerfile
+    profiles: [images]
+
+  stream-source:
+    image: livestreaming/source:local
+    build:
+      context: .
+      dockerfile: docker/source/Dockerfile
+    profiles: [images]
+
+  stream-source-gpu:
+    image: livestreaming/source-gpu:local
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: docker/source-gpu/Dockerfile
+      platforms:
+        - linux/amd64
+    profiles: [gpu]
+
+  cdn-edge:
+    image: livestreaming/cdn:local
+    build:
+      context: docker/cdn
+    profiles: [images]
+
+  traffic-client:
+    image: livestreaming/traffic:local
+    build:
+      context: docker/traffic
+    profiles: [images]
+
+  stream-client:
+    image: livestreaming/client:local
+    build:
+      context: docker/client
+    profiles: [images]

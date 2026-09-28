@@ -1,0 +1,4 @@
+media/generated/*
+!media/generated/.gitkeep
+.runtime/
+.DS_Store

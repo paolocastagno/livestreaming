@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adaptive streaming network lab</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">ORIGIN → CDN → ISP → HOME</p>
+        <h1>Adaptive live streaming</h1>
+        <p class="subtitle">Glass Half · H.264/AAC · six-rendition ABR ladder up to native 4K</p>
+      </div>
+      <span id="state" class="badge waiting">waiting</span>
+    </header>
+
+    <section class="video-shell">
+      <video id="video" controls autoplay muted playsinline></video>
+    </section>
+
+    <section class="controls">
+      <label>
+        Protocol
+        <select id="protocol">
+          <option value="dash">MPEG-DASH</option>
+          <option value="hls">HLS (CMAF)</option>
+        </select>
+      </label>
+      <label>
+        Quality
+        <select id="quality"><option value="auto">Auto (ABR)</option></select>
+      </label>
+      <button id="reload" type="button">Reload stream</button>
+    </section>
+
+    <section class="stats" aria-live="polite">
+      <article><span>Playing</span><strong id="resolution">—</strong></article>
+      <article><span>Media bitrate</span><strong id="bitrate">—</strong></article>
+      <article><span>Bandwidth estimate</span><strong id="bandwidth">—</strong></article>
+      <article><span>Buffer ahead</span><strong id="buffer">—</strong></article>
+      <article><span>Live latency</span><strong id="latency">—</strong></article>
+      <article><span>Dropped frames</span><strong id="dropped">—</strong></article>
+    </section>
+
+    <section class="notes">
+      <h2>Experiment</h2>
+      <p>Try <code>./labctl profile 5g</code>, then add another household
+      download with <code>./labctl traffic heavy</code>. Keep quality on Auto
+      and watch the selected rendition and buffer respond. Stop competing
+      traffic with <code>./labctl traffic off</code>.</p>
+      <p id="message">The player retries while the live manifest starts.</p>
+    </section>
+  </main>
+  <script src="vendor/shaka-player.compiled.js"></script>
+  <script src="player.js"></script>
+</body>
+</html>

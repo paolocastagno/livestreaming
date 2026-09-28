@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly ORIGIN="${ORIGIN_URL:-http://10.0.5.1}"
+readonly RTMP_BASE="${RTMP_BASE_URL:-rtmp://10.0.5.1:1935/ingest}"
+readonly INPUT="${INPUT_VIDEO:-/opt/media/glass-half-2160p.webm}"
+readonly LOG="${STREAM_LOG_DIR:-/var/log/streaming}"
+readonly FFMPEG="${FFMPEG_BIN:-ffmpeg}"
+readonly FRAME_RATE=24
+readonly GOP_SIZE=48
+
+require_gpu_stack() {
+  command -v nvidia-smi >/dev/null
+  nvidia-smi --query-gpu=name,uuid,memory.total,driver_version \
+    --format=csv,noheader
+
+  if ! "$FFMPEG" -hide_banner -encoders 2>&1 | grep -q 'h264_nvenc'; then
+    echo "FFmpeg does not provide h264_nvenc." >&2
+    return 1
+  fi
+  if ! "$FFMPEG" -hide_banner -filters 2>&1 | grep -q 'scale_cuda'; then
+    echo "FFmpeg does not provide scale_cuda." >&2
+    return 1
+  fi
+  if [[ ! -s "$INPUT" ]]; then
+    echo "Missing 4K source: $INPUT" >&2
+    return 1
+  fi
+}
+
+if [[ "${1:-}" == --check ]]; then
+  require_gpu_stack
+  "$FFMPEG" -hide_banner -loglevel error \
+    -f lavfi -i 'color=size=128x128:rate=1' -frames:v 1 \
+    -c:v h264_nvenc -f null -
+  echo "GPU_TRANSCODER_CHECK_OK"
+  exit 0
+fi
+
+mkdir -p "$LOG"
+require_gpu_stack >"$LOG/gpu.log" 2>&1
+
+for _ in $(seq 1 60); do
+  if curl --fail --silent "$ORIGIN/healthz" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+curl --fail --silent "$ORIGIN/healthz" >/dev/null
+
+readonly FILTER_GRAPH='[0:v]split=6[v240in][v360in][v480in][v720in][v1080in][v2160in];[v240in]scale_cuda=426:240:format=yuv420p[v240];[v360in]scale_cuda=640:360:format=yuv420p[v360];[v480in]scale_cuda=854:480:format=yuv420p[v480];[v720in]scale_cuda=1280:720:format=yuv420p[v720];[v1080in]scale_cuda=1920:1080:format=yuv420p[v1080];[v2160in]scale_cuda=3840:2160:format=yuv420p[v2160]'
+
+ffmpeg_args=(
+  -hide_banner -loglevel warning -nostdin
+  -re -stream_loop -1
+  -hwaccel cuda -hwaccel_output_format cuda
+  -i "$INPUT"
+  -filter_complex "$FILTER_GRAPH"
+)
+
+add_output() {
+  local label=$1
+  local bitrate=$2
+  local maxrate=$3
+  local buffer=$4
+  local level=$5
+
+  ffmpeg_args+=(
+    -map "[v${label%p}]" -map '0:a:0?'
+    -c:v h264_nvenc -preset p4 -tune hq -profile:v high -level:v "$level"
+    -rc:v vbr -b:v "$bitrate" -maxrate:v "$maxrate" -bufsize:v "$buffer"
+    -g:v "$GOP_SIZE" -keyint_min:v "$GOP_SIZE" -forced-idr:v 1
+    -c:a aac -b:a 128k -ar 48000 -ac 2
+    -metadata:s:v:0 title="Glass Half - ${label} live NVENC rendition"
+    -flvflags no_duration_filesize -f flv
+    "$RTMP_BASE/glass-half-${label}"
+  )
+}
+
+add_output 240p 400k 500k 800k 4.1
+add_output 360p 800k 960k 1600k 4.1
+add_output 480p 1400k 1680k 2800k 4.1
+add_output 720p 2800k 3360k 5600k 4.1
+add_output 1080p 5000k 6000k 10000k 4.1
+add_output 2160p 12000k 14400k 24000k 5.1
+
+echo "Starting one-decode, six-rendition NVENC contribution pipeline."
+echo "Input: 3840x2160 VP9 at ${FRAME_RATE} fps; aligned GOP: ${GOP_SIZE} frames."
+
+while true; do
+  set +e
+  "$FFMPEG" "${ffmpeg_args[@]}" >>"$LOG/transcoder.log" 2>&1
+  status=$?
+  set -e
+  echo "$(date --iso-8601=seconds) FFmpeg exited with status $status; restarting in one second." \
+    >>"$LOG/transcoder.log"
+  sleep 1
+done
