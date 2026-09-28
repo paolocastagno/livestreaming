@@ -1,9 +1,9 @@
-# Test media
+# Experimental media
 
-`./labctl prepare` downloads the native 3840×2160 **Glass Half** open movie and
-creates a 60-second, keyframe-aligned H.264/AAC bitrate ladder at 240p, 360p,
-480p, 720p, 1080p, and 2160p. All downloading and transcoding happens in a
-container; the generated files are ignored by version control.
+`./labctl prepare cpu` downloads the native 3840×2160 **Glass Half** open
+movie and creates a 60-second, keyframe-aligned H.264/AAC bitrate ladder at
+240p, 360p, 480p, 720p, 1080p, and 2160p. All downloading and transcoding
+happen in a container; the generated files are ignored by version control.
 
 `./labctl prepare gpu` downloads only the native 4K VP9/Opus source. The live
 GPU source creates all six H.264/AAC renditions at runtime instead of storing

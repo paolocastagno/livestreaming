@@ -85,7 +85,7 @@ need_gpu_media() {
 
 usage() {
   cat <<'EOF'
-Container-only Kathara adaptive streaming lab
+Container-only adaptive live-streaming experiment
 
 Usage: ./labctl COMMAND [ARGS]
 
@@ -155,7 +155,7 @@ case "${1:-help}" in
     echo "Or open the shaped host/LAN endpoint:"
     echo "  $SHAPED_STREAM_URL"
     echo
-    echo "Try './labctl profile 5g' and './labctl traffic heavy' while video is playing."
+    echo "Experiment controls: './labctl profile NAME' and './labctl traffic PRESET'."
     ;;
   down)
     need_docker

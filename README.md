@@ -1,123 +1,136 @@
-# Kathará live-streaming lab
+# Adaptive live-streaming experiment
 
-This project runs a realistic adaptive live-video delivery chain and a
-controllable residential network entirely in Docker/Kathará.
+This project is a reproducible testbed for observing adaptive live-video
+delivery under controlled residential-network conditions. It runs a complete
+streaming path—encoder, origin, CDN edge, ISP, home gateway, browser player, and
+competing household traffic—entirely in Docker/Kathará.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of every
-component, protocol, network segment, and end-to-end request flow.
+The testbed is intended for experiments with adaptive bitrate (ABR) selection,
+live latency, buffering, CDN caching, last-mile constraints, and cross traffic.
+It provides the environment and controls without assuming a particular result.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of the
+components, protocols, network segments, and request flow.
 
 ```text
 live encoder       origin             CDN PoP              ISP/access       home
 source ──RTMP──▶ server ──HTTP──▶ cdn edge ──▶ isp ──▶ home gateway ┬───▶ client/player
-                                                                    └─▶ background traffic
+                                                                    └──▶ background traffic
   10.0.5.2         10.0.4.2          10.0.3.2       shaped last mile      10.0.1.2/.3
 ```
 
 The browser requests the CDN address, never the origin. Live manifests bypass
-the CDN cache; immutable CMAF initialization and media objects are cached.
-Video and background traffic share the same asymmetric residential bottleneck.
+the CDN cache; immutable fragmented-MP4 initialization and media objects are
+cached. Video and background traffic share the same asymmetric residential
+bottleneck.
 
-## Streaming pipeline
+## What the testbed measures
 
-1. The `source` node acts as a managed live encoder. In portable CPU mode it
-   paces six prepared renditions; in GPU mode it decodes one native 4K source,
-   performs six CUDA scales, and runs six simultaneous NVENC encoders. Both
-   modes publish keyframe-aligned H.264/AAC over RTMP from 240p through 2160p.
-2. The `server` node is the origin. nginx-rtmp receives those contribution
-   streams and supervised FFmpeg packagers produce live fMP4 HLS and MPEG-DASH
-   with four-second segments and a 32-second live window. Video renditions use
-   one shared audio representation.
-3. The `cdn` node is a pull-through edge. It refreshes live manifests from the
-   origin and caches CMAF media objects with cache locking, range requests, and
-   visible `X-Cache-Status` headers.
-4. The client reaches the edge through an ISP/core hop and a residential
-   gateway. HTB sets shared down/up capacity, netem adds delay/loss, and SFQ
-   makes concurrent household flows share the bottleneck fairly.
+The main experimental controls are:
 
-Portable mode encodes rendition files ahead of time so experiments can run on
-a laptop without an NVIDIA GPU. The optional GPU mode performs the complete
-decode, scale, encode, contribution, packaging, caching, and playback pipeline
-live on suitable Linux workstations.
+- access capacity, delay, and loss;
+- background traffic rate and direction;
+- HLS or MPEG-DASH delivery; and
+- a portable pre-encoded source or live GPU transcoding.
 
-DRM, advertising, subscriber authentication, and production telemetry are
-intentionally excluded. They do not improve the transport and ABR experiments
-this lab is designed for.
+The player displays the active resolution, declared media bitrate, estimated
+bandwidth, buffer ahead, live latency, and dropped frames. Network queue
+counters and CDN cache status are also available for diagnostics.
+
+DRM, advertising, subscriber authentication, radio-layer behavior, multi-CDN
+steering, and production telemetry are deliberately outside the scope of the
+experiment.
 
 ## Quick start
 
-Prerequisites are Docker Desktop or Docker Engine, about 6 GB of free disk, and
-preferably at least 6 CPUs/8 GB RAM for smooth 4K preparation and playback.
+Requirements:
+
+- Docker Desktop or Docker Engine with Linux containers;
+- approximately 6 GB of free disk; and
+- preferably at least 6 CPUs and 8 GB RAM for smooth 4K preparation and
+  playback.
+
+Start the portable CPU-source experiment:
 
 ```bash
-./labctl up
+./labctl up cpu
 ```
 
-The first run downloads a 60-second excerpt of the native-4K Blender open movie
-**Glass Half** (CC BY 4.0), creates the six-rendition ladder, builds the images,
-and launches the topology. Then open either:
+On the first run, the command downloads a 60-second excerpt of the native-4K
+Blender open movie **Glass Half** (CC BY 4.0), creates a six-rendition ladder,
+builds the images, and launches the topology.
 
-- <http://localhost:6080/vnc.html?autoconnect=true&resize=scale> — Chromium
-  running inside the emulated client.
-- <http://localhost:8088/> — a host/LAN browser whose requests are reverse
-  proxied from the client and still cross the full emulated path.
-
-Allow roughly 15–30 seconds for all contribution streams and packagers to
-become ready, then verify routing, manifests, rendition counts, and CDN cache
-behavior:
+Allow approximately 15–30 seconds for the contribution streams and packagers
+to become ready, then validate the complete path:
 
 ```bash
 ./labctl check
 ```
 
-Stop and remove all devices and collision domains with:
+A successful validation ends with `STREAM_CHECK_OK`. It checks routing,
+manifests, rendition counts, actual media retrieval, and CDN cache behavior.
+
+Open either player:
+
+- <http://localhost:6080/vnc.html?autoconnect=true&resize=scale> — Chromium
+  running inside the emulated client.
+- <http://localhost:8088/> — a host or LAN browser whose requests are proxied
+  by the client and still cross the full emulated path.
+
+Stop and remove the topology with:
 
 ```bash
 ./labctl down
 ```
 
-## Live GPU transcoding
+## Reference experiment
 
-The GPU source is designed for a workstation equipped with: an Intel i9-13900,
-RTX 4000 SFF Ada with 20 GB VRAM, 32 logical CPUs, and one NUMA node. It needs
-Docker Engine, a working NVIDIA driver, and NVIDIA Container Toolkit; Kathará
-itself remains inside its management container.
+The following procedure provides a repeatable starting point for observing ABR
+behavior under competing household traffic:
 
-```bash
-./labctl prepare gpu     # download the native 4K source; no CPU ladder encode
-./labctl build gpu       # build pinned CUDA 12.8 + FFmpeg/NVENC image
-./labctl gpu-check       # verify GPU injection and perform a one-frame encode
-./labctl up gpu          # generate the GPU lab and start it
-```
+1. Start the CPU source and confirm that `./labctl check` succeeds.
+2. Open the player, select MPEG-DASH and **Auto**, and apply the baseline:
 
-GPU mode uses FFmpeg 7.1.1 and nv-codec-headers 13.0.19.0 at pinned commits.
-One FFmpeg process decodes the native 3840×2160 VP9 programme with NVDEC,
-splits it into six CUDA scaling branches, and opens six H.264 NVENC outputs.
-All outputs retain the native 24 fps cadence and use aligned 48-frame
-(two-second) GOPs. Audio is decoded from Opus and encoded to 48 kHz AAC for
-RTMP compatibility.
+   ```bash
+   ./labctl profile 4g
+   ./labctl traffic off
+   ```
 
-Because FFmpeg's CUDA scaling kernels are compiled with NVIDIA `nvcc`, FFmpeg
-marks this build `nonfree`. Build and use the image locally for experiments;
-do not publish or redistribute the resulting binary image. The Dockerfile,
-patches, scripts, and build instructions may still be kept in the repository.
+3. Allow playback to stabilize, then note the displayed resolution, bandwidth
+   estimate, buffer, latency, and dropped frames.
+4. Start a competing download:
 
-The project-local Kathará manager extension translates `gpus`, `cpuset_cpus`,
-and `cpuset_mems` metadata into Docker resource requests. It does not change
-Docker's global default runtime. The resource allocation is:
+   ```bash
+   ./labctl traffic heavy
+   ```
 
-| Role | Logical CPUs | CPU quota | Memory | GPU |
-|---|---:|---:|---:|---:|
-| Host reserve | `0-3`, `30-31` | — | — | — |
-| ISP | `4-5` | 1 | 512 MiB | — |
-| Home gateway | `6-7` | 1 | 512 MiB | — |
-| CDN edge | `8-11` | 1 | 2 GiB | — |
-| Origin/packagers | `12-15` | 2 | 4 GiB | — |
-| GPU source | `16-23` | 8 | 8 GiB | GPU 0 |
-| Browser/player | `24-27` | 2 | 4 GiB | — |
-| Background traffic | `28-29` | 0.5 | 512 MiB | — |
+5. Observe the same values for a fixed interval chosen before the run.
+6. Remove the competing traffic and observe recovery:
 
-`./labctl mode` reports which generated topology subsequent control commands
-will use. Run `./labctl down` before switching between CPU and GPU labs.
+   ```bash
+   ./labctl traffic off
+   ```
+
+For comparable repetitions, keep the source mode, protocol, access profile,
+warm-up time, and observation interval unchanged. The selected representation
+or buffer response is an observation, not a required outcome.
+
+## Streaming pipeline
+
+1. The `source` node publishes six keyframe-aligned H.264/AAC RTMP feeds from
+   240p through 2160p. CPU mode paces prepared files; GPU mode performs live
+   decode, scale, and encode.
+2. The `server` node receives the contribution streams and packages live fMP4
+   HLS and MPEG-DASH with four-second segments and a 32-second live window.
+3. The `cdn` node acts as a pull-through edge. It refreshes live manifests from
+   the origin and caches immutable media objects.
+4. The client reaches the edge through an ISP/core hop and residential gateway.
+   HTB controls capacity, netem adds delay and loss, and SFQ shares the
+   bottleneck between concurrent flows.
+
+Portable mode is the default because it removes the machine-dependent cost of
+real-time 4K encoding while preserving the live contribution, packaging,
+caching, network, and playback stages.
 
 ## Residential access profiles
 
@@ -140,15 +153,14 @@ CDN/backbone side adds another fixed 2 ms each way.
 ./labctl profile clear
 ```
 
-These reproduce end-to-end IP conditions, not radio scheduling, a 5G core, or
-DOCSIS/DSL framing. Their purpose is realistic capacity, latency, queueing, and
-loss at the point where adaptive streaming reacts.
+These profiles reproduce application-visible IP conditions, not radio
+scheduling, a 5G core, or DOCSIS/DSL framing.
 
 ## Competing household traffic
 
-The `background` device runs paced TCP traffic to an iperf3 server at the CDN
-edge. Because it sits beside the player on the HOME LAN, it competes for the
-same downlink or uplink queue.
+The `background` device runs paced TCP traffic to iperf3 servers at the CDN
+edge. It sits beside the player on the HOME network and shares the same
+downlink and uplink queues.
 
 ```bash
 ./labctl traffic light          # 5 Mb/s download
@@ -163,10 +175,35 @@ same downlink or uplink queue.
 ```
 
 A target above the current access capacity intentionally saturates that link.
-With Quality set to **Auto**, compare the selected rendition, buffer, latency,
-and dropped frames before and after adding traffic.
+The configured value is a target rate; `./labctl traffic status` reports the
+traffic generator state.
 
-## Debugging and observability
+## Live GPU transcoding
+
+GPU mode is designed for an NVIDIA Linux workstation. It requires Docker
+Engine, a working NVIDIA driver, and NVIDIA Container Toolkit.
+
+```bash
+./labctl prepare gpu
+./labctl build gpu
+./labctl gpu-check
+./labctl up gpu
+```
+
+The source uses FFmpeg 7.1.1 and nv-codec-headers 13.0.19.0 at pinned commits.
+One process decodes the native 3840×2160 VP9 programme with NVDEC, creates six
+CUDA scaling branches, and publishes six H.264 NVENC/AAC outputs. All outputs
+retain the native 24 fps cadence and use aligned 48-frame GOPs.
+
+The project-local Kathará extension passes GPU, CPU-affinity, and NUMA metadata
+to Docker. `./labctl mode` reports the active source mode. Run `./labctl down`
+before switching between CPU and GPU modes.
+
+FFmpeg classifies this CUDA-enabled build as `nonfree` because its scaling
+kernels are compiled with NVIDIA `nvcc`. Build and use the image locally; do
+not redistribute the binary image.
+
+## Diagnostics
 
 ```bash
 ./labctl status
@@ -178,16 +215,14 @@ and dropped frames before and after adding traffic.
 ./labctl exec background /usr/local/bin/background-traffic status
 ```
 
-Host endpoints:
-
 | Endpoint | Purpose | Uses residential emulation? |
 |---|---|---|
-| <http://localhost:8088/> | Shaped player via the client proxy | Yes |
-| <http://localhost:6080/vnc.html> | Display for the in-lab browser | Media does |
-| <http://localhost:8081/> | CDN edge debugging | No |
-| <http://localhost:8080/> | Origin debugging | No |
+| <http://localhost:8088/> | Shaped player through the client proxy | Yes |
+| <http://localhost:6080/vnc.html> | Display for the in-testbed browser | Media does |
+| <http://localhost:8081/> | CDN edge diagnostics | No |
+| <http://localhost:8080/> | Origin diagnostics | No |
 
-Inside the lab, the primary endpoints are:
+Inside the topology:
 
 | Purpose | URL |
 |---|---|
@@ -197,41 +232,53 @@ Inside the lab, the primary endpoints are:
 | Origin readiness | `http://10.0.4.2/readyz` |
 | Origin RTMP status | `http://10.0.4.2/status` |
 
-## Access from another computer or the Internet
+## Reproducibility and limits
 
-On the same LAN, use `http://HOST_LAN_IP:8088/` after allowing TCP 8088 through
-the host firewall. Internet access additionally requires a port forward or a
-secure tunnel/reverse proxy. This endpoint is plain HTTP with no authentication
-or rate limiting. Do not expose noVNC (`6080`), the direct origin (`8080`), or
-the CDN debug port (`8081`) publicly.
+The topology, media preparation, service configuration, network profiles, and
+validation are version controlled and invoked through `labctl`. Reproducing a
+run requires the same repository revision, source mode, protocol, access
+profile, traffic setting, and timing. Random packet loss and host scheduling
+can still introduce run-to-run variation, so quantitative comparisons should
+use repeated runs.
+
+CPU mode republishes an offline-encoded ladder and therefore does not model
+encoder delay or overload. The testbed also uses one origin, one CDN edge,
+plain HTTP, and application-level network shaping. Conclusions should remain
+within those boundaries.
 
 ## Build and maintenance
 
 ```bash
-./labctl prepare cpu   # download/encode the portable six-rendition ladder
-./labctl build cpu     # build the portable lab images
-./labctl prepare gpu   # download only the native 4K input
-./labctl build gpu     # build the live NVENC source and common lab images
+./labctl prepare cpu   # download and encode the portable ladder
+./labctl build cpu     # build the portable images
+./labctl prepare gpu   # download only the native 4K source
+./labctl build gpu     # build the live GPU source and common images
 ./labctl clean-media   # remove generated media after confirmation
 ```
 
-Generated media lives under `media/generated/` and is ignored by version
+Generated media is stored under `media/generated/` and ignored by version
 control. Attribution is written to `media/generated/ATTRIBUTION.txt`.
 
-Kathará itself runs in a management container and controls sibling device
-containers through `/var/run/docker.sock`. Docker-socket access is effectively
-administrator access to Docker, so only use the reviewed local launcher image.
-The lab starts with `--no-shared`, avoiding host-path mounts in device nodes.
+Kathará runs in a management container with `/var/run/docker.sock` mounted.
+Docker-socket access is effectively administrative access to Docker, so only
+use the reviewed local launcher image. Device nodes start with `--no-shared`,
+which avoids host-path mounts.
+
+For LAN access, use `http://HOST_LAN_IP:8088/` after allowing TCP 8088 through
+the host firewall. This endpoint is plain HTTP with no authentication or rate
+limiting. Do not expose noVNC (6080), the direct origin (8080), or the CDN
+diagnostic port (8081) publicly.
 
 ## Repository layout
 
-- `lab/` — the seven-node topology, routes, and last-mile shapers.
-- `docker/source/` — paced live contribution publishers.
-- `docker/source-gpu/` — pinned CUDA/FFmpeg live NVDEC/CUDA/NVENC encoder.
-- `docker/server/` — RTMP ingest, supervised HLS/DASH origin packagers, player.
-- `docker/cdn/` — pull-through media edge and iperf3 traffic endpoint.
-- `docker/client/` — Chromium/noVNC, shaped host proxy, end-to-end checks.
-- `docker/traffic/` — controllable competing household TCP traffic.
-- `docker/media-prep/` — containerized download and rendition preparation.
-- `docker/kathara/` — pinned containerized Kathará CLI.
-- `labctl` — the command wrapper for the complete experiment.
+- `ARCHITECTURE.md` — topology, components, protocols, and request lifecycle.
+- `lab/` — seven-node topology, routes, and last-mile shapers.
+- `docker/source/` — paced portable contribution publishers.
+- `docker/source-gpu/` — live NVDEC/CUDA/NVENC encoder.
+- `docker/server/` — RTMP ingest, HLS/DASH packagers, and player.
+- `docker/cdn/` — pull-through media edge and iperf3 endpoint.
+- `docker/client/` — Chromium/noVNC, shaped host proxy, and validation.
+- `docker/traffic/` — controllable household TCP traffic.
+- `docker/media-prep/` — containerized media preparation.
+- `docker/kathara/` — containerized Kathará CLI.
+- `labctl` — command wrapper for the complete experiment.

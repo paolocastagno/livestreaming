@@ -1,15 +1,16 @@
-# Live-streaming architecture
+# Live-streaming testbed architecture
 
 ## 1. Purpose and scope
 
-This lab models the complete media-delivery path between a live encoder and a
-residential viewer. It is designed for experiments involving adaptive bitrate
-(ABR) selection, live segment delivery, CDN caching, last-mile constraints, and
-competition from other household traffic.
+This experimental testbed models the complete media-delivery path between a
+live encoder and a residential viewer. It supports controlled observation of
+adaptive bitrate (ABR) selection, live segment delivery, CDN caching,
+last-mile constraints, and competition from other household traffic.
 
 The architecture deliberately concentrates on the video pipeline and network
-behavior. DRM, advertising, subscriber authentication, multi-CDN steering, and
-backend telemetry are outside its scope.
+behavior; it does not imply a particular experimental outcome. DRM,
+advertising, subscriber authentication, multi-CDN steering, and backend
+telemetry are outside its scope.
 
 The system runs entirely in Docker. A containerized Kathará manager creates the
 device containers, Layer-2 collision domains, interfaces, routes, and traffic
