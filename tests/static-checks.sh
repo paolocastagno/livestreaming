@@ -10,6 +10,7 @@ bash -n labctl docker/media-prep/prepare-media.sh \
   docker/server/bin/package-hls docker/server/bin/package-dash \
   docker/server/bin/show-stream-logs docker/client/start-browser \
   docker/client/check-streams docker/traffic/background-traffic \
+  docker/rum/monitor-client \
   lab/source.startup lab/server.startup lab/cdn.startup lab/isp.startup \
   lab/home.startup lab/client.startup lab/background.startup \
   lab/isp/usr/local/sbin/set-access-link \
@@ -34,6 +35,7 @@ for file in \
   docker/client/Dockerfile \
   docker/client/nginx.conf \
   docker/traffic/Dockerfile \
+  docker/rum/monitor-client \
   scenarios/single-isp/scenario.conf \
   scenarios/single-isp/lab.conf \
   scenarios/single-isp/lab.gpu.conf \
@@ -75,6 +77,10 @@ grep -q '100mbit 20mbit 10ms 0.05%' labctl
 grep -q 'proxy_cache media' docker/cdn/nginx.conf
 grep -q 'sfq quantum 1514 perturb' lab/isp/usr/local/sbin/set-access-link
 grep -q 'traffic heavy' README.md
+grep -q 'labctl rum 60s 500ms' README.md
+grep -q 'results/' .gitignore
+grep -q 'RUM_REVISION=' labctl
+grep -q 'cgroupns=host' labctl
 grep -q 'ARCHITECTURE.md' README.md
 grep -q 'Playback request flow' ARCHITECTURE.md
 

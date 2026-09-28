@@ -7,6 +7,11 @@ readonly SCENARIOS_DIR="$PROJECT_DIR/scenarios"
 readonly RUNTIME_DIR="$PROJECT_DIR/.runtime"
 readonly ACTIVE_MODE_FILE="$RUNTIME_DIR/source-mode"
 readonly ACTIVE_SCENARIO_FILE="$RUNTIME_DIR/scenario"
+readonly CLIENT_STATE_DIR="$RUNTIME_DIR/client-state"
+readonly RESULTS_DIR="$PROJECT_DIR/results"
+readonly RUM_REPOSITORY="https://github.com/paolocastagno/rum.git"
+readonly RUM_REVISION="41839ec379222935d4e70049676571ff2daadbd2"
+readonly RUM_IMAGE="${RUM_IMAGE:-rum/runtime:24.04}"
 
 compose() {
   docker compose --project-directory "$PROJECT_DIR" "$@"
@@ -106,6 +111,216 @@ select_context() {
   mkdir -p "$RUNTIME_DIR"
   printf '%s\n' "$scenario" >"$ACTIVE_SCENARIO_FILE"
   printf '%s\n' "$mode" >"$ACTIVE_MODE_FILE"
+}
+
+initialize_client_state() {
+  local client
+  mkdir -p "$CLIENT_STATE_DIR"
+  for client in "${CLIENT_DEVICES[@]}"; do
+    printf '%s\n' 4g >"$CLIENT_STATE_DIR/$client.profile"
+    printf '%s\n' off >"$CLIENT_STATE_DIR/$client.traffic"
+  done
+}
+
+write_client_state() {
+  local client=$1
+  local kind=$2
+  local value=$3
+  mkdir -p "$CLIENT_STATE_DIR"
+  printf '%s\n' "$value" >"$CLIENT_STATE_DIR/$client.$kind"
+}
+
+read_client_state() {
+  local client=$1
+  local kind=$2
+  local fallback=$3
+  local path="$CLIENT_STATE_DIR/$client.$kind"
+  if [[ -s "$path" ]]; then
+    sed -n '1p' "$path"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+sanitize_result_token() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
+}
+
+client_container_id() {
+  local client=$1
+  local id
+  local ids=()
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && ids+=("$id")
+  done < <(
+    docker ps --no-trunc \
+      --filter label=app=kathara \
+      --filter "label=name=$client" \
+      --format '{{.ID}}'
+  )
+
+  if [[ "${#ids[@]}" -eq 0 ]]; then
+    echo "No running Kathara container found for client '$client'." >&2
+    return 1
+  fi
+  if [[ "${#ids[@]}" -ne 1 ]]; then
+    echo "More than one running Kathara container is named '$client'; stop the stale lab and retry." >&2
+    return 1
+  fi
+  printf '%s\n' "${ids[0]}"
+}
+
+build_rum_image() {
+  local source_dir=${1:-}
+  if [[ -z "$source_dir" ]]; then
+    source_dir="$RUNTIME_DIR/rum-$RUM_REVISION"
+    if [[ ! -s "$source_dir/Makefile" ]]; then
+      command -v git >/dev/null 2>&1 || {
+        echo "git is required to fetch RUM. Pass an existing RUM checkout instead." >&2
+        exit 1
+      }
+      mkdir -p "$RUNTIME_DIR"
+      git clone "$RUM_REPOSITORY" "$source_dir"
+      git -C "$source_dir" checkout --detach "$RUM_REVISION"
+    fi
+  fi
+
+  [[ -s "$source_dir/containers/base/Dockerfile" && \
+     -s "$source_dir/containers/build/Dockerfile" && \
+     -s "$source_dir/containers/runtime/Dockerfile" ]] || {
+    echo "'$source_dir' is not a RUM source checkout." >&2
+    exit 2
+  }
+
+  source_dir="$(cd "$source_dir" && pwd)"
+  echo "Building RUM from $source_dir"
+  docker build --file "$source_dir/containers/base/Dockerfile" --tag rum/base:24.04 "$source_dir"
+  docker build --file "$source_dir/containers/build/Dockerfile" --tag rum/build:24.04 "$source_dir"
+  docker build --file "$source_dir/containers/runtime/Dockerfile" --tag "$RUM_IMAGE" "$source_dir"
+}
+
+run_rum_measurement() {
+  local duration=${1:-60s}
+  local interval=${2:-500ms}
+  local scenario
+  local mode
+  local timestamp
+  local slug
+  local result_dir
+  local candidate
+  local suffix=2
+  local index client profile traffic container_id monitor_name
+  local failed=0
+  local monitor_pids=()
+  local monitor_names=()
+  local container_ids=()
+
+  [[ "$duration" =~ ^[1-9][0-9]*(ns|us|ms|s|min|h)$ ]] || {
+    echo "Invalid duration '$duration'. Use a positive integer such as 30s, 500ms, or 2min." >&2
+    exit 2
+  }
+  [[ "$interval" =~ ^[1-9][0-9]*(ns|us|ms|s|min|h)$ ]] || {
+    echo "Invalid interval '$interval'. Use a positive integer such as 100ms or 1s." >&2
+    exit 2
+  }
+  [[ $# -le 2 ]] || {
+    echo "Usage: ./labctl rum [DURATION] [INTERVAL]" >&2
+    exit 2
+  }
+
+  need_docker
+  if [[ "$(docker info --format '{{.CgroupVersion}}')" != 2 ]]; then
+    echo "RUM requires a Docker host using cgroup v2." >&2
+    exit 1
+  fi
+  if ! docker image inspect "$RUM_IMAGE" >/dev/null 2>&1; then
+    echo "Missing RUM image '$RUM_IMAGE'. Run './labctl rum-build [RUM_SOURCE_DIR]' first." >&2
+    exit 1
+  fi
+
+  scenario=$(active_scenario)
+  mode=$(active_mode)
+  load_scenario "$scenario"
+
+  # Resolve every client before creating output so a stopped or ambiguous lab
+  # cannot leave behind a directory that looks like a completed experiment.
+  for client in "${CLIENT_DEVICES[@]}"; do
+    container_ids+=("$(client_container_id "$client")")
+  done
+
+  timestamp=$(date -u '+%Y%m%dT%H%M%SZ')
+  slug="${scenario}-${mode}"
+  for client in "${CLIENT_DEVICES[@]}"; do
+    profile=$(read_client_state "$client" profile 4g)
+    traffic=$(read_client_state "$client" traffic off)
+    slug+="_${client}-${profile}-${traffic}"
+  done
+  slug+="_rum-${duration}-${interval}"
+  slug=$(sanitize_result_token "$slug")
+
+  mkdir -p "$RESULTS_DIR"
+  result_dir="$RESULTS_DIR/${timestamp}_${slug}"
+  candidate=$result_dir
+  while [[ -e "$candidate" ]]; do
+    candidate="${result_dir}-${suffix}"
+    suffix=$((suffix + 1))
+  done
+  result_dir=$candidate
+  mkdir "$result_dir"
+
+  printf '%s\n' 'scenario,source_mode,duration,interval,client,isp,access_profile,background_traffic,rum_output' \
+    >"$result_dir/configuration.csv"
+  for ((index=0; index<${#CLIENT_DEVICES[@]}; index++)); do
+    client=${CLIENT_DEVICES[$index]}
+    profile=$(read_client_state "$client" profile 4g)
+    traffic=$(read_client_state "$client" traffic off)
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s.csv\n' \
+      "$scenario" "$mode" "$duration" "$interval" "$client" \
+      "${ISP_DEVICES[$index]}" "$profile" "$traffic" "$client" \
+      >>"$result_dir/configuration.csv"
+  done
+
+  stop_rum_monitors() {
+    if [[ "${#monitor_names[@]}" -gt 0 ]]; then
+      docker rm --force "${monitor_names[@]}" >/dev/null 2>&1 || true
+    fi
+  }
+  trap 'stop_rum_monitors; exit 130' INT TERM
+
+  echo "RUM output: $result_dir"
+  for ((index=0; index<${#CLIENT_DEVICES[@]}; index++)); do
+    client=${CLIENT_DEVICES[$index]}
+    container_id=${container_ids[$index]}
+    monitor_name="livestreaming-rum-${client}-$$"
+    monitor_names+=("$monitor_name")
+    echo "Starting RUM for $client (${container_id:0:12})..."
+    docker run --rm \
+      --name "$monitor_name" \
+      --privileged \
+      --cgroupns=host \
+      --mount type=bind,source=/sys/fs/cgroup,target=/sys/fs/cgroup \
+      --mount type=bind,source="$result_dir",target=/output \
+      --mount type=bind,source="$PROJECT_DIR/docker/rum/monitor-client",target=/monitor-client,readonly \
+      --entrypoint /bin/sh \
+      "$RUM_IMAGE" \
+      /monitor-client "$container_id" "$duration" "$interval" "/output/$client.csv" \
+      >"$result_dir/$client.rum.log" 2>&1 &
+    monitor_pids+=("$!")
+  done
+
+  for ((index=0; index<${#monitor_pids[@]}; index++)); do
+    if ! wait "${monitor_pids[$index]}"; then
+      client=${CLIENT_DEVICES[$index]}
+      echo "RUM failed for $client; see $result_dir/$client.rum.log" >&2
+      failed=1
+    fi
+  done
+  trap - INT TERM
+
+  if [[ "$failed" -ne 0 ]]; then
+    return 1
+  fi
+  echo "RUM measurement complete (${#CLIENT_DEVICES[@]} client(s))."
 }
 
 resolve_up_context() {
@@ -255,6 +470,8 @@ Usage: ./labctl COMMAND [ARGS]
   profile NAME [TARGET]        Apply an access profile to all or one household
   traffic PRESET [TARGET]      Control cross traffic for all or one household
   traffic DIR RATE [TARGET]    Start custom download, upload, or both traffic
+  rum-build [SOURCE_DIR]       Build the pinned RUM runtime image
+  rum [DURATION] [INTERVAL]    Measure every client (defaults: 60s, 500ms)
   shell DEVICE                 Open a shell in a scenario device
   exec DEVICE CMD...           Run a command in a scenario device
   logs                         Tail source, origin, and CDN logs
@@ -302,6 +519,7 @@ case "${1:-help}" in
     "$0" build "$source_mode"
     select_context "$scenario" "$source_mode"
     load_scenario "$scenario"
+    initialize_client_state
     kathara lstart --noterminals --no-shared -d "$(lab_dir)"
     echo
     echo "Scenario '$scenario' started with the $source_mode source."
@@ -360,6 +578,7 @@ case "${1:-help}" in
         kathara exec --wait -d "$(lab_dir)" "${ISP_DEVICES[$index]}" -- /usr/local/sbin/set-access-link eth1 "${args[0]}" "${args[2]}" "${args[3]}"
         kathara exec --wait -d "$(lab_dir)" "${HOME_DEVICES[$index]}" -- /usr/local/sbin/set-access-link eth0 "${args[1]}" "${args[2]}" "${args[3]}"
       fi
+      write_client_state "${CLIENT_DEVICES[$index]}" profile "${2}"
       echo "${ISP_DEVICES[$index]} profile '${2}': down=${args[0]} up=${args[1]} delay=${args[2]}/direction loss=${args[3]}"
     done
     ;;
@@ -408,7 +627,19 @@ case "${1:-help}" in
     for index in "${SELECTED_INDEXES[@]}"; do
       echo "===== ${BACKGROUND_DEVICES[$index]} (${ISP_DEVICES[$index]}) ====="
       kathara exec --wait -d "$(lab_dir)" "${BACKGROUND_DEVICES[$index]}" -- /usr/local/bin/background-traffic "${traffic_args[@]}"
+      case "${traffic_args[0]}" in
+        stop) write_client_state "${CLIENT_DEVICES[$index]}" traffic off ;;
+        start) write_client_state "${CLIENT_DEVICES[$index]}" traffic "${traffic_args[1]}-${traffic_args[2]}" ;;
+      esac
     done
+    ;;
+  rum-build)
+    need_docker
+    [[ $# -le 2 ]] || { echo "Usage: ./labctl rum-build [RUM_SOURCE_DIR]" >&2; exit 2; }
+    build_rum_image "${2:-}"
+    ;;
+  rum)
+    run_rum_measurement "${@:2}"
     ;;
   shell)
     need_docker

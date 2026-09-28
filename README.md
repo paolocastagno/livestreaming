@@ -165,6 +165,55 @@ For comparable repetitions, keep the source mode, protocol, access profile,
 warm-up time, and observation interval unchanged. The selected representation
 or buffer response is an observation, not a required outcome.
 
+## Client resource measurement with RUM
+
+[RUM](https://github.com/paolocastagno/rum) measures the complete resource
+usage of each end-user client container: Chromium, the display/noVNC stack,
+and the shaped-player reverse proxy. Build the pinned RUM runtime once, then
+start a measurement for every client in the active scenario:
+
+```bash
+./labctl rum-build
+./labctl rum 60s 500ms
+```
+
+The first command downloads the pinned upstream RUM revision into `.runtime/`
+and builds `rum/runtime:24.04`. To build from an existing checkout instead,
+run `./labctl rum-build /path/to/rum`. Set `RUM_IMAGE` when invoking `labctl`
+to use an already-built image under another name.
+
+The measurement duration and sampling interval default to 60 seconds and 500
+milliseconds. One RUM monitor runs concurrently for each scenario client, so
+multi-ISP households cover the same wall-clock interval. RUM attaches to the
+existing client cgroups and writes directly to a host bind mount; nothing has
+to be copied out of the clients afterward.
+
+Results are stored under the Git-ignored `results/` directory. A run directory
+is named with its UTC timestamp, scenario, source mode, every client's access
+profile and background-traffic setting, and the RUM duration/interval, for
+example:
+
+```text
+results/20260928T143000Z_multi-isp-cpu_client-4g-off_client2-congested-download-80M_rum-60s-500ms/
+├── configuration.csv
+├── client.csv
+├── client.rum.log
+├── client2.csv
+└── client2.rum.log
+```
+
+`configuration.csv` repeats the run context in machine-readable form. Each
+client CSV is RUM's schema-versioned aggregate CPU, memory, block-I/O, and
+ingress-network output. The directory records controls applied through
+`labctl`; player choices made interactively, such as HLS versus DASH or a
+manual representation, should be recorded separately when they are part of
+the experiment.
+
+RUM requires Linux cgroup v2 and elevated BPF/cgroup access. Its short-lived
+monitor containers therefore run privileged with the host cgroup namespace.
+Only use a trusted RUM image. On Docker Desktop, the measurements describe the
+client containers inside Docker's Linux VM, not macOS or Windows processes.
+
 ## Streaming pipeline
 
 1. The `source` node publishes six keyframe-aligned H.264/AAC RTMP feeds from
