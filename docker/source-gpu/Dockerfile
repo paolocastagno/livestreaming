@@ -47,6 +47,7 @@ RUN git init /tmp/ffmpeg \
        --enable-decoder=opus \
        --enable-decoder=vp9 \
        --enable-decoder=vp9_cuvid \
+       --enable-decoder=wrapped_avframe \
        --enable-demuxer=matroska \
        --enable-encoder=aac \
        --enable-encoder=h264_nvenc \

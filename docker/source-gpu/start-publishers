@@ -31,7 +31,7 @@ require_gpu_stack() {
 if [[ "${1:-}" == --check ]]; then
   require_gpu_stack
   "$FFMPEG" -hide_banner -loglevel error \
-    -f lavfi -i 'color=size=128x128:rate=1' -frames:v 1 \
+    -f lavfi -i 'color=size=426x240:rate=1' -frames:v 1 \
     -c:v h264_nvenc -f null -
   echo "GPU_TRANSCODER_CHECK_OK"
   exit 0
