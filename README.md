@@ -62,7 +62,7 @@ On the first run, the command downloads the native-4K Blender open movie
 **Glass Half** (CC BY 4.0), creates a full-length six-rendition ladder,
 builds the images, and launches the topology.
 
-Allow approximately 15–30 seconds for the contribution streams and packagers
+Allow approximately 45–60 seconds for the contribution streams and packagers
 to become ready, then validate the complete path:
 
 ```bash

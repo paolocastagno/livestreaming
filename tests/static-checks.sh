@@ -8,6 +8,7 @@ bash -n labctl docker/media-prep/prepare-media.sh \
   docker/source/start-publishers docker/source-gpu/start-publishers \
   docker/server/bin/start-live \
   docker/server/bin/package-hls docker/server/bin/package-dash \
+  docker/server/bin/live-start-time \
   docker/server/bin/show-stream-logs docker/client/start-browser \
   docker/client/check-streams docker/traffic/background-traffic \
   docker/rum/monitor-client \
@@ -69,6 +70,8 @@ grep -q 'glass-half-2160p.mp4' docker/source/Dockerfile
 grep -q 'glass-half-audio.flac' docker/source/Dockerfile
 grep -q 'atrim=end_sample' docker/media-prep/prepare-media.sh
 grep -q 'maximum_phase_skew_ms' docker/client/check-streams
+grep -q 'check_numbering HLS' docker/client/check-streams
+grep -q 'live-start-time' docker/server/bin/package-hls docker/server/bin/package-dash docker/server/Dockerfile
 grep -q 'h264_nvenc' docker/source-gpu/start-publishers
 grep -q 'scale_cuda' docker/source-gpu/start-publishers
 grep -q 'DeviceRequest' docker/kathara/patch-docker-resources.py

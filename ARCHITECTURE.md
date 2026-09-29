@@ -240,17 +240,22 @@ Supervisor automatically restarts nginx or a failed packager. Packagers can be
 started before the contribution streams are ready; they wait for input, and
 Supervisor retries them after unexpected exits.
 
-Each packager opens its six RTMP inputs one after another, which takes several
-seconds per input, so every input is joined at a different point in the
-programme. nginx-rtmp forwards the publisher's timestamps, and the packagers
-keep them with `-copyts` instead of rebasing each input to zero. Renditions
-and the shared audio are therefore aligned by the source clock, not by join
-time. Before starting, each packager reads the current source clock once and
-subtracts it from every output (rounded to a whole segment), so the live
-timeline starts near zero, consistent with the manifest's availability start
-time, without disturbing that alignment. Because the source GOP equals the segment duration, each input is joined
-on the same four-second grid (`wait_key`), and audio starts with the first
-video keyframe (`wait_video`), so segment boundaries also line up.
+Each packager opens its six RTMP inputs one after another. nginx-rtmp
+(`wait_key`) starts every new subscriber at the next four-second keyframe, so
+the inputs join about one GOP apart, roughly 22 seconds from first to last.
+nginx-rtmp forwards the publisher's timestamps, and the packagers keep them
+with `-copyts` instead of rebasing each input to zero, so renditions and the
+shared audio are aligned by the source clock rather than by join time.
+
+Players switch renditions by segment number, so segment N must also cover the
+same time in every rendition. Before starting, each packager therefore reads
+the source clock once (`live-start-time`) and starts all of its outputs
+(output `-ss`) half a second before a keyframe nine GOPs later, after every
+input has joined. All renditions and the audio begin together, share the same
+segment numbering, and their timeline starts near zero, consistent with the
+DASH availability start time. As a result the manifests appear about 40
+seconds after a packager starts. `check-streams` verifies that the numbering
+is consistent in both protocols.
 
 #### HLS output
 
@@ -463,8 +468,8 @@ shared audio playlist, and fMP4 media objects.
 8. Start every client proxy, desktop service, and Chromium instance.
 
 The origin clears previous live output during startup. There is no persistent
-DVR or archive. Once contribution data is flowing, the packagers need several
-segments before both live manifests are ready.
+DVR or archive. Once contribution data is flowing, the packagers need about 40
+seconds before both live manifests are ready (see the common start above).
 
 ## 6. Host access and policy routing
 
@@ -501,6 +506,8 @@ verifies:
 - six DASH video Representations plus shared audio, including 3840×2160;
 - sub-segment timestamp alignment (within one frame) across all six DASH
   video Representations;
+- consistent segment numbering (segment N covers the same time) across every
+  HLS playlist and DASH Representation, including audio;
 - actual H.264 media retrieval and probing through both HLS and DASH;
 - a CDN segment request followed by a cache `HIT`;
 - the final `STREAM_CHECK_OK` marker consumed by the host wrapper.

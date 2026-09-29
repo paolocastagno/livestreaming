@@ -20,5 +20,6 @@ COPY docker/server/bin/ /usr/local/bin/
 COPY docker/server/supervisord.conf /etc/supervisor/conf.d/streaming.conf
 
 RUN chmod 0755 /usr/local/bin/start-live /usr/local/bin/package-hls \
-                  /usr/local/bin/package-dash /usr/local/bin/show-stream-logs \
+                  /usr/local/bin/package-dash /usr/local/bin/live-start-time \
+                  /usr/local/bin/show-stream-logs \
     && mkdir -p /srv/stream/hls /srv/stream/dash /var/log/streaming
