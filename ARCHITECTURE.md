@@ -499,8 +499,8 @@ verifies:
 - CDN and origin health;
 - six HLS video variants, including 3840×2160;
 - six DASH video Representations plus shared audio, including 3840×2160;
-- sub-segment timestamp alignment across all DASH video Representations and
-  shared audio;
+- sub-segment timestamp alignment (within one frame) across all six DASH
+  video Representations;
 - actual H.264 media retrieval and probing through both HLS and DASH;
 - a CDN segment request followed by a cache `HIT`;
 - the final `STREAM_CHECK_OK` marker consumed by the host wrapper.

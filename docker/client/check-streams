@@ -26,9 +26,12 @@ grep -q 'RESOLUTION=3840x2160' /tmp/master.m3u8
 grep -Eq 'width="3840"[^>]*height="2160"|height="2160"[^>]*width="3840"' /tmp/manifest.mpd
 grep -q 'contentType="audio"' /tmp/manifest.mpd
 
-# Compare the phase within a four-second segment across all six video
-# Representations and shared audio. Whole-segment window differences are fine;
-# sub-segment skew means one loop has drifted away from the others.
+# Compare the phase within a four-second segment across the six video
+# Representations, which the manifest lists before the audio. They share one
+# encoder clock and keyframes, so their segments must start together; whole
+# segment window differences are fine. Audio is left out: its segment
+# boundaries need not match video's, and in GPU mode the film's 193.2-second
+# loop moves the keyframes by about 170 ms each pass while A/V sync is kept.
 mapfile -t timeline_timescales < <(
   sed -n 's/.*<SegmentTemplate timescale="\([0-9][0-9]*\)".*/\1/p' /tmp/manifest.mpd
 )
@@ -42,7 +45,7 @@ mapfile -t timeline_ticks < <(
 
 reference_phase_ms=
 maximum_phase_skew_ms=0
-for ((i=0; i<7; i++)); do
+for ((i=0; i<6; i++)); do
   start_ms=$((timeline_ticks[$i] * 1000 / timeline_timescales[$i]))
   phase_ms=$((start_ms % 4000))
   if [[ -z "$reference_phase_ms" ]]; then
@@ -54,13 +57,14 @@ for ((i=0; i<7; i++)); do
   ((phase_skew_ms > 2000)) && phase_skew_ms=$((4000 - phase_skew_ms))
   ((phase_skew_ms > maximum_phase_skew_ms)) && maximum_phase_skew_ms=$phase_skew_ms
 done
-[[ "$maximum_phase_skew_ms" -le 250 ]] || {
-  echo "DASH audio/video timelines are misaligned by ${maximum_phase_skew_ms} ms." >&2
+# 50 ms is just over one frame at 24 fps.
+[[ "$maximum_phase_skew_ms" -le 50 ]] || {
+  echo "DASH video timelines are misaligned by ${maximum_phase_skew_ms} ms." >&2
   exit 1
 }
 
 echo "HLS:  OK ($variants variants)"
-echo "DASH: OK ($representations aligned audio/video representations; max skew ${maximum_phase_skew_ms} ms)"
+echo "DASH: OK ($representations audio/video representations; video max skew ${maximum_phase_skew_ms} ms)"
 
 timeout 25 ffprobe -v error -select_streams v:0 \
   -show_entries stream=codec_name,width,height -of csv=p=0 \
