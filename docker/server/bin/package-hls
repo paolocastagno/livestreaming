@@ -9,11 +9,25 @@ for quality in 240p 360p 480p 720p 1080p 2160p; do
   input_args+=( -thread_queue_size 1024 -i "$RTMP/glass-half-${quality}" )
 done
 
+# Inputs are opened one after another, so each one is joined at a different
+# point of the live programme. -copyts keeps the publisher's shared clock
+# instead of rebasing every input to zero, which keeps renditions and audio
+# aligned; the four-second source GOP puts every join on the segment grid.
+# One common offset then moves that clock (which counts from the source's
+# start) back to about zero, keeping the timeline close to the wall clock.
+clock_ms=$(
+  timeout 20 ffprobe -v error -select_streams v:0 -read_intervals '%+#1' \
+    -show_entries packet=pts -of csv=p=0 "$RTMP/glass-half-240p"
+) || true
+clock_ms=${clock_ms%%$'\n'*}
+[[ "$clock_ms" =~ ^[0-9]+$ ]] || { echo "Contribution clock is not available yet." >&2; exit 1; }
+ts_offset=-$((clock_ms / 4000 * 4))
+
 # One shared audio rendition avoids downloading six duplicate audio tracks.
 exec ffmpeg -hide_banner -loglevel warning \
   "${input_args[@]}" \
   -map 0:v:0 -map 1:v:0 -map 2:v:0 -map 3:v:0 -map 4:v:0 -map 5:v:0 \
-  -map 0:a:0 -c copy \
+  -map 0:a:0 -c copy -copyts -output_ts_offset "$ts_offset" \
   -f hls -hls_time 4 -hls_list_size 8 \
   -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
   -hls_flags delete_segments+independent_segments+program_date_time+temp_file \

@@ -24,9 +24,43 @@ representations=$(grep -o '<Representation' /tmp/manifest.mpd | wc -l | tr -d ' 
 [[ "$representations" -eq 7 ]] || { echo "Expected 7 DASH audio/video representations, got $representations." >&2; exit 1; }
 grep -q 'RESOLUTION=3840x2160' /tmp/master.m3u8
 grep -Eq 'width="3840"[^>]*height="2160"|height="2160"[^>]*width="3840"' /tmp/manifest.mpd
+grep -q 'contentType="audio"' /tmp/manifest.mpd
+
+# Compare the phase within a four-second segment across all six video
+# Representations and shared audio. Whole-segment window differences are fine;
+# sub-segment skew means one loop has drifted away from the others.
+mapfile -t timeline_timescales < <(
+  sed -n 's/.*<SegmentTemplate timescale="\([0-9][0-9]*\)".*/\1/p' /tmp/manifest.mpd
+)
+mapfile -t timeline_ticks < <(
+  sed -n 's/.*<S t="\([0-9][0-9]*\)".*/\1/p' /tmp/manifest.mpd
+)
+[[ "${#timeline_timescales[@]}" -eq 7 && "${#timeline_ticks[@]}" -eq 7 ]] || {
+  echo "Expected seven DASH audio/video timelines." >&2
+  exit 1
+}
+
+reference_phase_ms=
+maximum_phase_skew_ms=0
+for ((i=0; i<7; i++)); do
+  start_ms=$((timeline_ticks[$i] * 1000 / timeline_timescales[$i]))
+  phase_ms=$((start_ms % 4000))
+  if [[ -z "$reference_phase_ms" ]]; then
+    reference_phase_ms=$phase_ms
+    continue
+  fi
+  phase_skew_ms=$((phase_ms - reference_phase_ms))
+  ((phase_skew_ms < 0)) && phase_skew_ms=$((-phase_skew_ms))
+  ((phase_skew_ms > 2000)) && phase_skew_ms=$((4000 - phase_skew_ms))
+  ((phase_skew_ms > maximum_phase_skew_ms)) && maximum_phase_skew_ms=$phase_skew_ms
+done
+[[ "$maximum_phase_skew_ms" -le 250 ]] || {
+  echo "DASH audio/video timelines are misaligned by ${maximum_phase_skew_ms} ms." >&2
+  exit 1
+}
 
 echo "HLS:  OK ($variants variants)"
-echo "DASH: OK ($representations audio/video representations)"
+echo "DASH: OK ($representations aligned audio/video representations; max skew ${maximum_phase_skew_ms} ms)"
 
 timeout 25 ffprobe -v error -select_streams v:0 \
   -show_entries stream=codec_name,width,height -of csv=p=0 \
@@ -34,9 +68,13 @@ timeout 25 ffprobe -v error -select_streams v:0 \
 timeout 25 ffprobe -v error -select_streams v:0 \
   -show_entries stream=codec_name,width,height -of csv=p=0 \
   "$EDGE/dash/manifest.mpd" > /tmp/dash-codec.csv
+timeout 25 ffprobe -v error -select_streams a:0 \
+  -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 \
+  "$EDGE/hls/audio/index.m3u8" > /tmp/hls-audio-codec.csv
 grep -q '^h264,426,240' /tmp/hls-codec.csv
 grep -q '^h264,426,240' /tmp/dash-codec.csv
-echo "Media fetch/decode probe: OK (H.264 426x240 through HLS and DASH)"
+grep -q '^aac,48000,2' /tmp/hls-audio-codec.csv
+echo "Media fetch/decode probe: OK (H.264 through HLS/DASH and aligned AAC audio)"
 
 variant_uri=$(awk '!/^#/ && NF {print; exit}' /tmp/master.m3u8 | tr -d '\r')
 curl --fail --silent --show-error "$EDGE/hls/$variant_uri" > /tmp/variant.m3u8

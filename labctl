@@ -440,6 +440,10 @@ need_media() {
       exit 1
     fi
   done
+  if [[ ! -s "$root/glass-half-audio.flac" ]]; then
+    echo "Missing generated audio loop. Run './labctl prepare' first." >&2
+    exit 1
+  fi
 }
 
 need_gpu_media() {

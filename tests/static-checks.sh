@@ -66,6 +66,9 @@ grep -q '10.1.1.0/24 via 10.0.3.3' scenarios/multi-isp/cdn.startup
 grep -q 'dash/manifest.mpd' docker/server/web/player.js
 grep -q 'hls/master.m3u8' docker/server/web/player.js
 grep -q 'glass-half-2160p.mp4' docker/source/Dockerfile
+grep -q 'glass-half-audio.flac' docker/source/Dockerfile
+grep -q 'atrim=end_sample' docker/media-prep/prepare-media.sh
+grep -q 'maximum_phase_skew_ms' docker/client/check-streams
 grep -q 'h264_nvenc' docker/source-gpu/start-publishers
 grep -q 'scale_cuda' docker/source-gpu/start-publishers
 grep -q 'DeviceRequest' docker/kathara/patch-docker-resources.py

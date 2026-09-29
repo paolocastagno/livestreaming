@@ -108,8 +108,8 @@ scenarios.
 ### 3.1 Media-preparation container
 
 The media-preparation image is a build-time tool rather than a node in the
-running topology. It downloads a 60-second native 3840×2160 excerpt of the
-Blender Foundation open movie **Glass Half**, licensed under CC BY 4.0.
+running topology. It downloads the native 3840×2160 Blender Foundation open
+movie **Glass Half** (about 193 seconds), licensed under CC BY 4.0.
 
 FFmpeg creates a keyframe-aligned H.264/AAC ladder:
 
@@ -123,18 +123,23 @@ FFmpeg creates a keyframe-aligned H.264/AAC ladder:
 | 2160p | 3840×2160 | 12 Mb/s | 5.1 |
 
 All renditions use 30 frames per second, AAC stereo at 48 kHz/128 kb/s, a
-two-second GOP, disabled scene-cut keyframes, and forced two-second keyframe
-alignment. Alignment is essential because an ABR player must be able to switch
-between representations at equivalent points on the media timeline.
+four-second GOP equal to the HLS/DASH segment duration, disabled scene-cut
+keyframes, and forced four-second keyframe alignment. Alignment is essential
+because an ABR player must be able to switch between representations at
+equivalent points on the media timeline.
 
-The prepared MP4 files are stored under `media/generated/variants/` and copied
-only into the source image.
+The whole film is used. It is padded with black and silence to the next
+whole GOP (196 seconds), so every loop starts on the keyframe and segment grid.
+The prepared video-only MP4 files are stored under `media/generated/variants/`
+with exactly 5,880 frames each. A shared lossless FLAC contains exactly
+9,408,000 stereo samples at 48 kHz. These exact boundaries keep every repeated
+input on the same programme clock.
 
 ### 3.2 Portable source/encoder simulator
 
 The `source` node represents the output side of a managed live encoder. It does
 not encode video at runtime. Instead, it reads each prepared rendition at its
-natural rate with FFmpeg, loops the 60-second programme indefinitely, and
+natural rate with FFmpeg, loops the full programme indefinitely, and
 publishes six concurrent RTMP streams to the origin:
 
 ```text
@@ -146,11 +151,14 @@ rtmp://10.0.5.1:1935/ingest/glass-half-1080p
 rtmp://10.0.5.1:1935/ingest/glass-half-2160p
 ```
 
-FFmpeg uses stream copy, so the encoded video and audio are not modified during
-publication. Each publisher runs in a restart loop: if its RTMP connection is
-lost, it waits briefly and reconnects independently of the other qualities.
-The source waits for the origin's HTTP liveness endpoint before starting the
-publishers.
+A single FFmpeg process stream-copies every prepared video and publishes all
+six feeds, so they share one timestamp clock. The 240p feed also carries the
+shared lossless audio loop through one AAC encoder that runs continuously
+across loop boundaries; the other five contribution feeds are video-only. This
+avoids repeating AAC encoder priming and prevents audio/video or rendition
+timestamp drift. The process runs in a restart loop: if any RTMP connection is
+lost, all six feeds restart together on a fresh common clock. The source waits
+for the origin's HTTP liveness endpoint before starting the publisher.
 
 This design separates the contribution phase from origin packaging while
 avoiding the large and machine-dependent CPU/GPU cost of real-time 4K ladder
@@ -185,10 +193,10 @@ native 3840x2160 VP9/Opus input
 
 The video frames stay in GPU memory between decode, split, scaling, and
 encoding. All branches retain the source's native 24 fps cadence and use a
-48-frame GOP, so every rendition has a keyframe every two seconds. Rate,
-maximum-rate, and VBV-buffer settings match the portable ladder. If any RTMP
-output fails, the single encoder process is restarted so the complete ladder
-returns with a common timeline.
+96-frame GOP, so every rendition has a keyframe every four seconds, once per
+segment. Rate, maximum-rate, and VBV-buffer settings match the portable
+ladder. If any RTMP output fails, the single encoder process is restarted so
+the complete ladder returns with a common timeline.
 
 Before live startup, the source verifies GPU visibility and the presence of
 `h264_nvenc` and `scale_cuda`. `./labctl gpu-check` additionally opens a real
@@ -231,6 +239,18 @@ It contains three principal services managed by Supervisor:
 Supervisor automatically restarts nginx or a failed packager. Packagers can be
 started before the contribution streams are ready; they wait for input, and
 Supervisor retries them after unexpected exits.
+
+Each packager opens its six RTMP inputs one after another, which takes several
+seconds per input, so every input is joined at a different point in the
+programme. nginx-rtmp forwards the publisher's timestamps, and the packagers
+keep them with `-copyts` instead of rebasing each input to zero. Renditions
+and the shared audio are therefore aligned by the source clock, not by join
+time. Before starting, each packager reads the current source clock once and
+subtracts it from every output (rounded to a whole segment), so the live
+timeline starts near zero, consistent with the manifest's availability start
+time, without disturbing that alignment. Because the source GOP equals the segment duration, each input is joined
+on the same four-second grid (`wait_key`), and audio starts with the first
+video keyframe (`wait_video`), so segment boundaries also line up.
 
 #### HLS output
 
@@ -479,6 +499,8 @@ verifies:
 - CDN and origin health;
 - six HLS video variants, including 3840×2160;
 - six DASH video Representations plus shared audio, including 3840×2160;
+- sub-segment timestamp alignment across all DASH video Representations and
+  shared audio;
 - actual H.264 media retrieval and probing through both HLS and DASH;
 - a CDN segment request followed by a cache `HIT`;
 - the final `STREAM_CHECK_OK` marker consumed by the host wrapper.

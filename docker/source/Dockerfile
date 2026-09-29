@@ -14,4 +14,5 @@ RUN chmod 0755 /usr/local/bin/start-publishers \
     && test -s /opt/media/glass-half-720p.mp4 \
     && test -s /opt/media/glass-half-1080p.mp4 \
     && test -s /opt/media/glass-half-2160p.mp4 \
+    && test -s /opt/media/glass-half-audio.flac \
     && mkdir -p /var/log/streaming

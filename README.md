@@ -58,8 +58,8 @@ Start the portable CPU-source experiment:
 ./labctl up cpu
 ```
 
-On the first run, the command downloads a 60-second excerpt of the native-4K
-Blender open movie **Glass Half** (CC BY 4.0), creates a six-rendition ladder,
+On the first run, the command downloads the native-4K Blender open movie
+**Glass Half** (CC BY 4.0), creates a full-length six-rendition ladder,
 builds the images, and launches the topology.
 
 Allow approximately 15–30 seconds for the contribution streams and packagers
@@ -216,8 +216,9 @@ client containers inside Docker's Linux VM, not macOS or Windows processes.
 
 ## Streaming pipeline
 
-1. The `source` node publishes six keyframe-aligned H.264/AAC RTMP feeds from
-   240p through 2160p. CPU mode paces prepared files; GPU mode performs live
+1. The `source` node publishes six keyframe-aligned H.264 RTMP feeds from 240p
+   through 2160p; the first also carries the shared AAC audio. CPU mode paces
+   exact-frame video and exact-sample audio loops; GPU mode performs live
    decode, scale, and encode.
 2. The `server` node receives the contribution streams and packages live fMP4
    HLS and MPEG-DASH with four-second segments and a 32-second live window.
@@ -308,7 +309,7 @@ Engine, a working NVIDIA driver, and NVIDIA Container Toolkit.
 The source uses FFmpeg 7.1.1 and nv-codec-headers 13.0.19.0 at pinned commits.
 One process decodes the native 3840×2160 VP9 programme with NVDEC, creates six
 CUDA scaling branches, and publishes six H.264 NVENC/AAC outputs. All outputs
-retain the native 24 fps cadence and use aligned 48-frame GOPs.
+retain the native 24 fps cadence and use aligned 96-frame (four-second) GOPs.
 
 The project-local Kathará extension passes GPU, CPU-affinity, and NUMA metadata
 to Docker. `./labctl mode` reports the active source mode. Run `./labctl down`

@@ -7,7 +7,9 @@ readonly INPUT="${INPUT_VIDEO:-/opt/media/glass-half-2160p.webm}"
 readonly LOG="${STREAM_LOG_DIR:-/var/log/streaming}"
 readonly FFMPEG="${FFMPEG_BIN:-ffmpeg}"
 readonly FRAME_RATE=24
-readonly GOP_SIZE=48
+# One GOP per four-second HLS/DASH segment, so the origin always joins every
+# rendition on the same segment grid.
+readonly GOP_SIZE=96
 
 require_gpu_stack() {
   command -v nvidia-smi >/dev/null
