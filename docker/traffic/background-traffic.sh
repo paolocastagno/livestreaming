@@ -79,7 +79,7 @@ case "${1:-status}" in
     show_status
     ;;
   *)
-    echo "Usage: background-traffic start {download|upload|both} RATE | stop | status" >&2
+    echo "Usage: background-traffic.sh start {download|upload|both} RATE | stop | status" >&2
     exit 2
     ;;
 esac

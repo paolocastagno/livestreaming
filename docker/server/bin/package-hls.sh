@@ -13,8 +13,8 @@ done
 # -copyts keeps the publisher's shared clock instead of rebasing every input
 # to zero, which keeps renditions and audio aligned. Output -ss then starts all
 # outputs at one common keyframe after every input has joined (see
-# live-start-time) and moves that clock back to about zero.
-start_time=$(live-start-time)
+# live-start-time.sh) and moves that clock back to about zero.
+start_time=$(live-start-time.sh)
 
 # One shared audio rendition avoids downloading six duplicate audio tracks.
 exec ffmpeg -hide_banner -loglevel warning \

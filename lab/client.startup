@@ -10,4 +10,4 @@ ip route replace default via "$bridge_gateway" dev eth1 table 100
 ip rule add from "$bridge_ip/32" table 100
 
 nginx
-/usr/local/bin/start-browser >/var/log/start-browser.log 2>&1 &
+/usr/local/bin/start-browser.sh >/var/log/start-browser.log 2>&1 &

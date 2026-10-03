@@ -10,4 +10,4 @@ bridge_gateway="${bridge_ip%.*}.1"
 ip route replace default via "$bridge_gateway" dev eth2 table 100
 ip rule add from "$bridge_ip/32" table 100
 
-/usr/local/bin/start-live >/var/log/streaming/startup.log 2>&1
+/usr/local/bin/start-live.sh >/var/log/streaming/startup.log 2>&1

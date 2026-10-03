@@ -55,7 +55,7 @@ Requirements:
 Start the portable CPU-source experiment:
 
 ```bash
-./labctl up cpu
+./labctl.sh up cpu
 ```
 
 On the first run, the command downloads the native-4K Blender open movie
@@ -66,7 +66,7 @@ Allow approximately 45–60 seconds for the contribution streams and packagers
 to become ready, then validate the complete path:
 
 ```bash
-./labctl check
+./labctl.sh check
 ```
 
 A successful validation ends with `STREAM_CHECK_OK`. It checks routing,
@@ -82,7 +82,7 @@ Open either player:
 Stop and remove the topology with:
 
 ```bash
-./labctl down
+./labctl.sh down
 ```
 
 ## Scenarios
@@ -97,15 +97,15 @@ All scenario definitions live under `scenarios/`:
 List or launch them with:
 
 ```bash
-./labctl scenarios
-./labctl validate multi-isp cpu
-./labctl up single-isp cpu
-./labctl up multi-isp cpu
+./labctl.sh scenarios
+./labctl.sh validate multi-isp cpu
+./labctl.sh up single-isp cpu
+./labctl.sh up multi-isp cpu
 ```
 
 `up` remains a single command: it prepares media, builds the required images,
-and starts every device in the selected scenario. `./labctl up cpu` is retained
-as shorthand for `./labctl up single-isp cpu`.
+and starts every device in the selected scenario. `./labctl.sh up cpu` is retained
+as shorthand for `./labctl.sh up single-isp cpu`.
 
 In `multi-isp`, both providers peer with the same off-net CDN edge on a common
 peering network, while each provider has its own access link, gateway, player,
@@ -138,12 +138,12 @@ The two multi-ISP players are exposed separately:
 The following procedure provides a repeatable starting point for observing ABR
 behavior under competing household traffic:
 
-1. Start the CPU source and confirm that `./labctl check` succeeds.
+1. Start the CPU source and confirm that `./labctl.sh check` succeeds.
 2. Open the player, select MPEG-DASH and **Auto**, and apply the baseline:
 
    ```bash
-   ./labctl profile 4g
-   ./labctl traffic off
+   ./labctl.sh profile 4g
+   ./labctl.sh traffic off
    ```
 
 3. Allow playback to stabilize, then note the displayed resolution, bandwidth
@@ -151,14 +151,14 @@ behavior under competing household traffic:
 4. Start a competing download:
 
    ```bash
-   ./labctl traffic heavy
+   ./labctl.sh traffic heavy
    ```
 
 5. Observe the same values for a fixed interval chosen before the run.
 6. Remove the competing traffic and observe recovery:
 
    ```bash
-   ./labctl traffic off
+   ./labctl.sh traffic off
    ```
 
 For comparable repetitions, keep the source mode, protocol, access profile,
@@ -173,13 +173,13 @@ and the shaped-player reverse proxy. Build the pinned RUM runtime once, then
 start a measurement for every client in the active scenario:
 
 ```bash
-./labctl rum-build
-./labctl rum 60s 500ms
+./labctl.sh rum-build
+./labctl.sh rum 60s 500ms
 ```
 
 The first command downloads the pinned upstream RUM revision into `.runtime/`
 and builds `rum/runtime:24.04`. To build from an existing checkout instead,
-run `./labctl rum-build /path/to/rum`. Set `RUM_IMAGE` when invoking `labctl`
+run `./labctl.sh rum-build /path/to/rum`. Set `RUM_IMAGE` when invoking `labctl.sh`
 to use an already-built image under another name.
 
 The measurement duration and sampling interval default to 60 seconds and 500
@@ -205,7 +205,7 @@ results/20260928T143000Z_multi-isp-cpu_client-4g-off_client2-congested-download-
 `configuration.csv` repeats the run context in machine-readable form. Each
 client CSV is RUM's schema-versioned aggregate CPU, memory, block-I/O, and
 ingress-network output. The directory records controls applied through
-`labctl`; player choices made interactively, such as HLS versus DASH or a
+`labctl.sh`; player choices made interactively, such as HLS versus DASH or a
 manual representation, should be recorded separately when they are part of
 the experiment.
 
@@ -248,17 +248,17 @@ CDN/backbone side adds another fixed 2 ms each way.
 | `bad` | 0.6 Mb/s | 0.256 Mb/s | 150 ms | 3% |
 
 ```bash
-./labctl profile 5g
-./labctl profile congested
-./labctl profile clear
+./labctl.sh profile 5g
+./labctl.sh profile congested
+./labctl.sh profile clear
 ```
 
 In a multi-household scenario, controls apply to every household by default.
 Pass a 1-based household number or device name to target just one path:
 
 ```bash
-./labctl profile fiber isp
-./labctl profile congested isp2
+./labctl.sh profile fiber isp
+./labctl.sh profile congested isp2
 ```
 
 These profiles reproduce application-visible IP conditions, not radio
@@ -271,27 +271,27 @@ edge. It sits beside the player on the HOME network and shares the same
 downlink and uplink queues.
 
 ```bash
-./labctl traffic light          # 5 Mb/s download
-./labctl traffic medium         # 20 Mb/s download
-./labctl traffic heavy          # 80 Mb/s download
-./labctl traffic upload         # 10 Mb/s upload
-./labctl traffic download 35M   # custom target rate
-./labctl traffic upload 3M
-./labctl traffic both 10M       # one flow in each direction
-./labctl traffic status
-./labctl traffic off
+./labctl.sh traffic light          # 5 Mb/s download
+./labctl.sh traffic medium         # 20 Mb/s download
+./labctl.sh traffic heavy          # 80 Mb/s download
+./labctl.sh traffic upload         # 10 Mb/s upload
+./labctl.sh traffic download 35M   # custom target rate
+./labctl.sh traffic upload 3M
+./labctl.sh traffic both 10M       # one flow in each direction
+./labctl.sh traffic status
+./labctl.sh traffic off
 ```
 
 The optional final selector also isolates cross traffic to one household:
 
 ```bash
-./labctl traffic heavy isp2
-./labctl traffic download 35M isp
-./labctl traffic off all
+./labctl.sh traffic heavy isp2
+./labctl.sh traffic download 35M isp
+./labctl.sh traffic off all
 ```
 
 A target above the current access capacity intentionally saturates that link.
-The configured value is a target rate; `./labctl traffic status` reports the
+The configured value is a target rate; `./labctl.sh traffic status` reports the
 traffic generator state.
 
 ## Live GPU transcoding
@@ -300,10 +300,10 @@ GPU mode is designed for an NVIDIA Linux workstation. It requires Docker
 Engine, a working NVIDIA driver, and NVIDIA Container Toolkit.
 
 ```bash
-./labctl prepare gpu
-./labctl build gpu
-./labctl gpu-check
-./labctl up gpu
+./labctl.sh prepare gpu
+./labctl.sh build gpu
+./labctl.sh gpu-check
+./labctl.sh up gpu
 ```
 
 The source uses FFmpeg 7.1.1 and nv-codec-headers 13.0.19.0 at pinned commits.
@@ -312,7 +312,7 @@ CUDA scaling branches, and publishes six H.264 NVENC/AAC outputs. All outputs
 retain the native 24 fps cadence and use aligned 96-frame (four-second) GOPs.
 
 The project-local Kathará extension passes GPU, CPU-affinity, and NUMA metadata
-to Docker. `./labctl mode` reports the active source mode. Run `./labctl down`
+to Docker. `./labctl.sh mode` reports the active source mode. Run `./labctl.sh down`
 before switching between CPU and GPU modes.
 
 FFmpeg classifies this CUDA-enabled build as `nonfree` because its scaling
@@ -322,15 +322,15 @@ not redistribute the binary image.
 ## Diagnostics
 
 ```bash
-./labctl status
-./labctl logs
-./labctl shell cdn
-./labctl exec client traceroute -n 10.0.3.2
-./labctl exec client2 traceroute -n 10.0.3.2  # multi-isp
-./labctl exec isp tc -s qdisc show dev eth1
-./labctl exec isp2 tc -s qdisc show dev eth1  # multi-isp
-./labctl exec home tc -s qdisc show dev eth0
-./labctl exec background /usr/local/bin/background-traffic status
+./labctl.sh status
+./labctl.sh logs
+./labctl.sh shell cdn
+./labctl.sh exec client traceroute -n 10.0.3.2
+./labctl.sh exec client2 traceroute -n 10.0.3.2  # multi-isp
+./labctl.sh exec isp tc -s qdisc show dev eth1
+./labctl.sh exec isp2 tc -s qdisc show dev eth1  # multi-isp
+./labctl.sh exec home tc -s qdisc show dev eth0
+./labctl.sh exec background /usr/local/bin/background-traffic.sh status
 ```
 
 | Endpoint | Purpose | Uses residential emulation? |
@@ -353,7 +353,7 @@ Inside the topology:
 ## Reproducibility and limits
 
 The scenarios, media preparation, service configuration, network profiles,
-and validation are version controlled and invoked through `labctl`.
+and validation are version controlled and invoked through `labctl.sh`.
 Reproducing a run requires the same repository revision, scenario, source
 mode, protocol, per-ISP access profiles, traffic settings, and timing. Random
 packet loss and host scheduling can still introduce run-to-run variation, so
@@ -367,11 +367,11 @@ Conclusions should remain within those boundaries.
 ## Build and maintenance
 
 ```bash
-./labctl prepare cpu   # download and encode the portable ladder
-./labctl build cpu     # build the portable images
-./labctl prepare gpu   # download only the native 4K source
-./labctl build gpu     # build the live GPU source and common images
-./labctl clean-media   # remove generated media after confirmation
+./labctl.sh prepare cpu   # download and encode the portable ladder
+./labctl.sh build cpu     # build the portable images
+./labctl.sh prepare gpu   # download only the native 4K source
+./labctl.sh build gpu     # build the live GPU source and common images
+./labctl.sh clean-media   # remove generated media after confirmation
 ```
 
 Generated media is stored under `media/generated/` and ignored by version
@@ -400,4 +400,4 @@ diagnostic port (8081) publicly.
 - `docker/traffic/` — controllable household TCP traffic.
 - `docker/media-prep/` — containerized media preparation.
 - `docker/kathara/` — containerized Kathará CLI.
-- `labctl` — command wrapper for the complete experiment.
+- `labctl.sh` — command wrapper for the complete experiment.

@@ -115,11 +115,11 @@ FFmpeg creates a keyframe-aligned H.264/AAC ladder:
 
 | Name | Resolution | Configured video rate | H.264 level |
 |---|---:|---:|---:|
-| 240p | 426×240 | 400 kb/s | 4.1 |
-| 360p | 640×360 | 800 kb/s | 4.1 |
-| 480p | 854×480 | 1.4 Mb/s | 4.1 |
-| 720p | 1280×720 | 2.8 Mb/s | 4.1 |
-| 1080p | 1920×1080 | 5 Mb/s | 4.1 |
+| 240p | 426×240 | 150 kb/s | 4.1 |
+| 360p | 640×360 | 350 kb/s | 4.1 |
+| 480p | 854×480 | 800 kb/s | 4.1 |
+| 720p | 1280×720 | 2 Mb/s | 4.1 |
+| 1080p | 1920×1080 | 4.5 Mb/s | 4.1 |
 | 2160p | 3840×2160 | 12 Mb/s | 5.1 |
 
 All renditions use 30 frames per second, AAC stereo at 48 kHz/128 kb/s, a
@@ -199,7 +199,7 @@ ladder. If any RTMP output fails, the single encoder process is restarted so
 the complete ladder returns with a common timeline.
 
 Before live startup, the source verifies GPU visibility and the presence of
-`h264_nvenc` and `scale_cuda`. `./labctl gpu-check` additionally opens a real
+`h264_nvenc` and `scale_cuda`. `./labctl.sh gpu-check` additionally opens a real
 NVENC session for a one-frame test, catching driver/runtime mismatches before
 the selected scenario is launched.
 
@@ -254,7 +254,7 @@ the source clock once (`live-start-time`) and starts all of its outputs
 input has joined. All renditions and the audio begin together, share the same
 segment numbering, and their timeline starts near zero, consistent with the
 DASH availability start time. As a result the manifests appear about 40
-seconds after a packager starts. `check-streams` verifies that the numbering
+seconds after a packager starts. `check-streams.sh` verifies that the numbering
 is consistent in both protocols.
 
 #### HLS output
@@ -454,7 +454,7 @@ shared audio playlist, and fMP4 media objects.
 
 ## 5. Startup and steady-state lifecycle
 
-`./labctl up SCENARIO SOURCE_MODE` performs the following sequence:
+`./labctl.sh up SCENARIO SOURCE_MODE` performs the following sequence:
 
 1. Prepare or reuse the six media renditions.
 2. Build the Kathará manager and all device images.
@@ -497,7 +497,7 @@ CDN nodes.
 
 ## 7. Validation and diagnostics
 
-`./labctl check` runs from every emulated client in the selected scenario and
+`./labctl.sh check` runs from every emulated client in the selected scenario and
 verifies:
 
 - the route and three-hop path to the CDN;

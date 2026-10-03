@@ -44,6 +44,8 @@ services:
       dockerfile: docker/source-gpu/Dockerfile
       platforms:
         - linux/amd64
+      args:
+        CUDA_ARCH: ${CUDA_ARCH:-75}
     profiles: [gpu]
 
   cdn-edge:

@@ -19,7 +19,8 @@ COPY --from=player /tmp/player/package/dist/shaka-player.compiled.js /srv/www/ve
 COPY docker/server/bin/ /usr/local/bin/
 COPY docker/server/supervisord.conf /etc/supervisor/conf.d/streaming.conf
 
-RUN chmod 0755 /usr/local/bin/start-live /usr/local/bin/package-hls \
-                  /usr/local/bin/package-dash /usr/local/bin/live-start-time \
-                  /usr/local/bin/show-stream-logs \
+RUN chmod 0755 /usr/local/bin/start-live.sh /usr/local/bin/package-hls.sh \
+                  /usr/local/bin/package-dash.sh /usr/local/bin/live-start-time.sh \
+                  /usr/local/bin/show-stream-logs.sh \
+    && ln -sf /usr/local/bin/live-start-time.sh /usr/local/bin/live-start-time \
     && mkdir -p /srv/stream/hls /srv/stream/dash /var/log/streaming

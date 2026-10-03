@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && (pwd -W 2>/dev/null || pwd))"
 readonly COMMON_LAB_DIR="$PROJECT_DIR/lab"
 readonly SCENARIOS_DIR="$PROJECT_DIR/scenarios"
 readonly RUNTIME_DIR="$PROJECT_DIR/.runtime"
@@ -18,7 +18,23 @@ compose() {
 }
 
 kathara() {
-  compose run --rm kathara "$@"
+  MSYS_NO_PATHCONV=1 compose run --rm kathara "$@"
+}
+
+detect_cuda_arch() {
+  if [[ -n "${CUDA_ARCH:-}" && "${CUDA_ARCH}" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$CUDA_ARCH"
+    return 0
+  fi
+  local arch=""
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    arch=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d '.\r\n ' || true)
+  fi
+  if [[ "$arch" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$arch"
+  else
+    printf '%s\n' 75
+  fi
 }
 
 active_mode() {
@@ -51,7 +67,7 @@ scenario_exists() {
 load_scenario() {
   local scenario=$1
   scenario_exists "$scenario" || {
-    echo "Unknown scenario '$scenario'. Run './labctl scenarios' to list them." >&2
+    echo "Unknown scenario '$scenario'. Run './labctl.sh scenarios' to list them." >&2
     exit 2
   }
 
@@ -86,7 +102,7 @@ prepare_scenario_lab() {
   local mode=$2
   local target="$RUNTIME_DIR/labs/${scenario}-${mode}"
   scenario_exists "$scenario" || {
-    echo "Unknown scenario '$scenario'. Run './labctl scenarios' to list them." >&2
+    echo "Unknown scenario '$scenario'. Run './labctl.sh scenarios' to list them." >&2
     exit 2
   }
   [[ "$mode" == cpu || "$mode" == gpu ]] || {
@@ -224,7 +240,7 @@ run_rum_measurement() {
     exit 2
   }
   [[ $# -le 2 ]] || {
-    echo "Usage: ./labctl rum [DURATION] [INTERVAL]" >&2
+    echo "Usage: ./labctl.sh rum [DURATION] [INTERVAL]" >&2
     exit 2
   }
 
@@ -234,7 +250,7 @@ run_rum_measurement() {
     exit 1
   fi
   if ! docker image inspect "$RUM_IMAGE" >/dev/null 2>&1; then
-    echo "Missing RUM image '$RUM_IMAGE'. Run './labctl rum-build [RUM_SOURCE_DIR]' first." >&2
+    echo "Missing RUM image '$RUM_IMAGE'. Run './labctl.sh rum-build [RUM_SOURCE_DIR]' first." >&2
     exit 1
   fi
 
@@ -300,10 +316,10 @@ run_rum_measurement() {
       --cgroupns=host \
       --mount type=bind,source=/sys/fs/cgroup,target=/sys/fs/cgroup \
       --mount type=bind,source="$result_dir",target=/output \
-      --mount type=bind,source="$PROJECT_DIR/docker/rum/monitor-client",target=/monitor-client,readonly \
+      --mount type=bind,source="$PROJECT_DIR/docker/rum/monitor-client.sh",target=/monitor-client.sh,readonly \
       --entrypoint /bin/sh \
       "$RUM_IMAGE" \
-      /monitor-client "$container_id" "$duration" "$interval" "/output/$client.csv" \
+      /monitor-client.sh "$container_id" "$duration" "$interval" "/output/$client.csv" \
       >"$result_dir/$client.rum.log" 2>&1 &
     monitor_pids+=("$!")
   done
@@ -342,7 +358,7 @@ resolve_up_context() {
   esac
 
   scenario_exists "$RESOLVED_SCENARIO" || {
-    echo "Unknown scenario '$RESOLVED_SCENARIO'. Run './labctl scenarios' to list them." >&2
+    echo "Unknown scenario '$RESOLVED_SCENARIO'. Run './labctl.sh scenarios' to list them." >&2
     exit 2
   }
   [[ "$RESOLVED_MODE" == cpu || "$RESOLVED_MODE" == gpu ]] || {
@@ -351,9 +367,31 @@ resolve_up_context() {
   }
 }
 
+find_household_index() {
+  local selector=$1
+  local i number
+
+  if [[ "$selector" =~ ^[1-9][0-9]*$ ]]; then
+    number=$((selector - 1))
+    if [[ "$number" -lt "${#ISP_DEVICES[@]}" ]]; then
+      printf '%s\n' "$number"
+      return 0
+    fi
+  fi
+
+  for ((i=0; i<${#ISP_DEVICES[@]}; i++)); do
+    if [[ "$selector" == "${ISP_DEVICES[$i]}" || "$selector" == "${HOME_DEVICES[$i]}" || \
+          "$selector" == "${CLIENT_DEVICES[$i]}" || "$selector" == "${BACKGROUND_DEVICES[$i]}" ]]; then
+      printf '%s\n' "$i"
+      return 0
+    fi
+  done
+  return 1
+}
+
 select_households() {
   local selector=${1:-all}
-  local i number
+  local idx i
   SELECTED_INDEXES=()
 
   if [[ "$selector" == all ]]; then
@@ -361,36 +399,18 @@ select_households() {
     return
   fi
 
-  if [[ "$selector" =~ ^[0-9]+$ ]]; then
-    number=$((selector - 1))
-    if [[ "$number" -ge 0 && "$number" -lt "${#ISP_DEVICES[@]}" ]]; then
-      SELECTED_INDEXES+=("$number")
-      return
-    fi
+  if idx=$(find_household_index "$selector"); then
+    SELECTED_INDEXES+=("$idx")
+    return
   fi
-
-  for ((i=0; i<${#ISP_DEVICES[@]}; i++)); do
-    if [[ "$selector" == "${ISP_DEVICES[$i]}" || "$selector" == "${HOME_DEVICES[$i]}" || \
-          "$selector" == "${CLIENT_DEVICES[$i]}" || "$selector" == "${BACKGROUND_DEVICES[$i]}" ]]; then
-      SELECTED_INDEXES+=("$i")
-      return
-    fi
-  done
 
   echo "Unknown household '$selector'. Choose all, a 1-based number, or an ISP/device name." >&2
   exit 2
 }
 
 is_household_selector() {
-  local selector=$1
-  local i
-  [[ "$selector" == all ]] && return 0
-  [[ "$selector" =~ ^[1-9][0-9]*$ && "$selector" -le "${#ISP_DEVICES[@]}" ]] && return 0
-  for ((i=0; i<${#ISP_DEVICES[@]}; i++)); do
-    [[ "$selector" == "${ISP_DEVICES[$i]}" || "$selector" == "${HOME_DEVICES[$i]}" || \
-       "$selector" == "${CLIENT_DEVICES[$i]}" || "$selector" == "${BACKGROUND_DEVICES[$i]}" ]] && return 0
-  done
-  return 1
+  [[ "$1" == all ]] && return 0
+  find_household_index "$1" >/dev/null 2>&1
 }
 
 device_exists() {
@@ -436,12 +456,12 @@ need_media() {
   local quality
   for quality in 240p 360p 480p 720p 1080p 2160p; do
     if [[ ! -s "$root/glass-half-${quality}.mp4" ]]; then
-      echo "Missing generated media. Run './labctl prepare' first." >&2
+      echo "Missing generated media. Run './labctl.sh prepare' first." >&2
       exit 1
     fi
   done
   if [[ ! -s "$root/glass-half-audio.flac" ]]; then
-    echo "Missing generated audio loop. Run './labctl prepare' first." >&2
+    echo "Missing generated audio loop. Run './labctl.sh prepare' first." >&2
     exit 1
   fi
 }
@@ -449,7 +469,7 @@ need_media() {
 need_gpu_media() {
   local source="$PROJECT_DIR/media/generated/source/glass-half-2160p.webm"
   if [[ ! -s "$source" ]]; then
-    echo "Missing native 4K source. Run './labctl prepare gpu' first." >&2
+    echo "Missing native 4K source. Run './labctl.sh prepare gpu' first." >&2
     exit 1
   fi
 }
@@ -458,7 +478,7 @@ usage() {
   cat <<'EOF'
 Container-only adaptive live-streaming experiment
 
-Usage: ./labctl COMMAND [ARGS]
+Usage: ./labctl.sh COMMAND [ARGS]
 
   up [SCENARIO] [cpu|gpu]       Prepare/build, then start every scenario device
   up [cpu|gpu]                  Start single-isp (backward-compatible form)
@@ -509,7 +529,9 @@ case "${1:-help}" in
         ;;
       gpu)
         need_gpu_media
-        compose build kathara stream-source-gpu stream-server cdn-edge stream-client traffic-client
+        cuda_arch=$(detect_cuda_arch)
+        echo "Building GPU source image for CUDA architecture compute_${cuda_arch} (sm_${cuda_arch})..."
+        CUDA_ARCH="$cuda_arch" compose build kathara stream-source-gpu stream-server cdn-edge stream-client traffic-client
         ;;
       *) echo "Choose cpu or gpu." >&2; exit 2 ;;
     esac
@@ -530,7 +552,7 @@ case "${1:-help}" in
     echo "Give the live packagers about 10 seconds, then open:"
     print_endpoints
     echo
-    echo "Experiment controls: './labctl profile NAME' and './labctl traffic PRESET'."
+    echo "Experiment controls: './labctl.sh profile NAME' and './labctl.sh traffic PRESET'."
     ;;
   down)
     need_docker
@@ -547,7 +569,7 @@ case "${1:-help}" in
     load_scenario "$(active_scenario)"
     for client in "${CLIENT_DEVICES[@]}"; do
       echo "===== validating $client ====="
-      output="$(kathara exec --wait -d "$(lab_dir)" "$client" -- /usr/local/bin/check-streams)"
+      output="$(kathara exec --wait -d "$(lab_dir)" "$client" -- /usr/local/bin/check-streams.sh)"
       printf '%s\n' "$output"
       if ! grep -q '^STREAM_CHECK_OK$' <<<"$output"; then
         echo "Stream validation failed inside $client." >&2
@@ -576,11 +598,11 @@ case "${1:-help}" in
     select_households "${3:-all}"
     for index in "${SELECTED_INDEXES[@]}"; do
       if [[ "${args[0]}" == clear ]]; then
-        kathara exec --wait -d "$(lab_dir)" "${ISP_DEVICES[$index]}" -- /usr/local/sbin/set-access-link eth1 clear
-        kathara exec --wait -d "$(lab_dir)" "${HOME_DEVICES[$index]}" -- /usr/local/sbin/set-access-link eth0 clear
+        kathara exec --wait -d "$(lab_dir)" "${ISP_DEVICES[$index]}" -- /usr/local/sbin/set-access-link.sh eth1 clear
+        kathara exec --wait -d "$(lab_dir)" "${HOME_DEVICES[$index]}" -- /usr/local/sbin/set-access-link.sh eth0 clear
       else
-        kathara exec --wait -d "$(lab_dir)" "${ISP_DEVICES[$index]}" -- /usr/local/sbin/set-access-link eth1 "${args[0]}" "${args[2]}" "${args[3]}"
-        kathara exec --wait -d "$(lab_dir)" "${HOME_DEVICES[$index]}" -- /usr/local/sbin/set-access-link eth0 "${args[1]}" "${args[2]}" "${args[3]}"
+        kathara exec --wait -d "$(lab_dir)" "${ISP_DEVICES[$index]}" -- /usr/local/sbin/set-access-link.sh eth1 "${args[0]}" "${args[2]}" "${args[3]}"
+        kathara exec --wait -d "$(lab_dir)" "${HOME_DEVICES[$index]}" -- /usr/local/sbin/set-access-link.sh eth0 "${args[1]}" "${args[2]}" "${args[3]}"
       fi
       write_client_state "${CLIENT_DEVICES[$index]}" profile "${2}"
       echo "${ISP_DEVICES[$index]} profile '${2}': down=${args[0]} up=${args[1]} delay=${args[2]}/direction loss=${args[3]}"
@@ -618,7 +640,7 @@ case "${1:-help}" in
         fi
         ;;
       download|both)
-        [[ -n "${3:-}" ]] || { echo "Usage: ./labctl traffic ${2} RATE [TARGET]" >&2; exit 2; }
+        [[ -n "${3:-}" ]] || { echo "Usage: ./labctl.sh traffic ${2} RATE [TARGET]" >&2; exit 2; }
         traffic_args=(start "${2}" "${3}")
         traffic_target=${4:-all}
         ;;
@@ -630,7 +652,7 @@ case "${1:-help}" in
     select_households "$traffic_target"
     for index in "${SELECTED_INDEXES[@]}"; do
       echo "===== ${BACKGROUND_DEVICES[$index]} (${ISP_DEVICES[$index]}) ====="
-      kathara exec --wait -d "$(lab_dir)" "${BACKGROUND_DEVICES[$index]}" -- /usr/local/bin/background-traffic "${traffic_args[@]}"
+      kathara exec --wait -d "$(lab_dir)" "${BACKGROUND_DEVICES[$index]}" -- /usr/local/bin/background-traffic.sh "${traffic_args[@]}"
       case "${traffic_args[0]}" in
         stop) write_client_state "${CLIENT_DEVICES[$index]}" traffic off ;;
         start) write_client_state "${CLIENT_DEVICES[$index]}" traffic "${traffic_args[1]}-${traffic_args[2]}" ;;
@@ -639,7 +661,7 @@ case "${1:-help}" in
     ;;
   rum-build)
     need_docker
-    [[ $# -le 2 ]] || { echo "Usage: ./labctl rum-build [RUM_SOURCE_DIR]" >&2; exit 2; }
+    [[ $# -le 2 ]] || { echo "Usage: ./labctl.sh rum-build [RUM_SOURCE_DIR]" >&2; exit 2; }
     build_rum_image "${2:-}"
     ;;
   rum)
@@ -656,7 +678,7 @@ case "${1:-help}" in
     ;;
   exec)
     need_docker
-    [[ $# -ge 3 ]] || { echo "Usage: ./labctl exec DEVICE COMMAND..." >&2; exit 2; }
+    [[ $# -ge 3 ]] || { echo "Usage: ./labctl.sh exec DEVICE COMMAND..." >&2; exit 2; }
     load_scenario "$(active_scenario)"
     device=$2
     device_exists "$device" || {
@@ -671,7 +693,7 @@ case "${1:-help}" in
     echo "===== source contribution publishers ====="
     kathara exec --wait -d "$(lab_dir)" source -- sh -c 'tail -n 8 /var/log/streaming/*.log 2>/dev/null || true'
     echo "===== origin ====="
-    kathara exec --wait -d "$(lab_dir)" server -- /usr/local/bin/show-stream-logs
+    kathara exec --wait -d "$(lab_dir)" server -- /usr/local/bin/show-stream-logs.sh
     echo "===== CDN edge ====="
     kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tail -n 30 /var/log/nginx/error.log /var/log/iperf3-*.log 2>/dev/null || true'
     ;;
@@ -679,11 +701,11 @@ case "${1:-help}" in
     need_docker
     need_gpu_media
     if ! docker image inspect livestreaming/source-gpu:local >/dev/null 2>&1; then
-      echo "Missing GPU source image. Run './labctl build gpu' first." >&2
+      echo "Missing GPU source image. Run './labctl.sh build gpu' first." >&2
       exit 1
     fi
     docker run --rm --gpus device=0 \
-      --entrypoint /usr/local/bin/start-publishers \
+      --entrypoint /usr/local/bin/start-publishers.sh \
       livestreaming/source-gpu:local --check
     ;;
   mode)
@@ -705,7 +727,7 @@ case "${1:-help}" in
     read -r -p "Remove downloaded and encoded media under $root? [y/N] " answer
     if [[ "$answer" == y || "$answer" == Y ]]; then
       find "$root" -mindepth 1 ! -name .gitkeep -delete
-      echo "Generated media removed; it can be recreated with './labctl prepare'."
+      echo "Generated media removed; it can be recreated with './labctl.sh prepare'."
     fi
     ;;
   help|-h|--help)

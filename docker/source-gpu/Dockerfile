@@ -3,7 +3,7 @@ FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS ffmpeg-build
 ARG DEBIAN_FRONTEND=noninteractive
 ARG FFMPEG_COMMIT=db69d06eeeab4f46da15030a80d539efb4503ca8
 ARG NV_CODEC_HEADERS_COMMIT=e844e5b26f46bb77479f063029595293aa8f812d
-ARG CUDA_ARCH=89
+ARG CUDA_ARCH=75
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -82,14 +82,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ffmpeg-build /opt/ffmpeg/ /opt/ffmpeg/
-COPY docker/source-gpu/start-publishers /usr/local/bin/start-publishers
+COPY docker/source-gpu/start-publishers.sh /usr/local/bin/start-publishers.sh
 COPY media/generated/source/glass-half-2160p.webm /opt/media/glass-half-2160p.webm
 
 ENV PATH=/opt/ffmpeg/bin:${PATH} \
     NVIDIA_VISIBLE_DEVICES=0 \
     NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-RUN chmod 0755 /usr/local/bin/start-publishers \
+RUN chmod 0755 /usr/local/bin/start-publishers.sh \
     && test -s /opt/media/glass-half-2160p.webm \
     && ffmpeg -hide_banner -encoders 2>&1 | grep -q 'h264_nvenc' \
     && ffmpeg -hide_banner -filters 2>&1 | grep -q 'scale_cuda' \

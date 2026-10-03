@@ -79,13 +79,14 @@ fi
 
 # label width height video-bitrate maxrate buffer H.264-level
 variants=(
-  '240p 426 240 400k 500k 800k 4.1'
-  '360p 640 360 800k 960k 1600k 4.1'
-  '480p 854 480 1400k 1680k 2800k 4.1'
-  '720p 1280 720 2800k 3360k 5600k 4.1'
-  '1080p 1920 1080 5000k 6000k 10000k 4.1'
+  '240p 426 240 150k 180k 300k 4.1'
+  '360p 640 360 350k 420k 700k 4.1'
+  '480p 854 480 800k 960k 1600k 4.1'
+  '720p 1280 720 2000k 2400k 4000k 4.1'
+  '1080p 1920 1080 4500k 5400k 9000k 4.1'
   '2160p 3840 2160 12000k 14400k 24000k 5.1'
 )
+
 
 for spec in "${variants[@]}"; do
   read -r label width height bitrate maxrate buffer level <<<"$spec"

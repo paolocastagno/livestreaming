@@ -6,5 +6,5 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY nginx.conf /etc/nginx/nginx.conf
-COPY start-browser check-streams /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/start-browser /usr/local/bin/check-streams
+COPY start-browser.sh check-streams.sh /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/start-browser.sh /usr/local/bin/check-streams.sh

@@ -79,11 +79,11 @@ add_output() {
   )
 }
 
-add_output 240p 400k 500k 800k 4.1
-add_output 360p 800k 960k 1600k 4.1
-add_output 480p 1400k 1680k 2800k 4.1
-add_output 720p 2800k 3360k 5600k 4.1
-add_output 1080p 5000k 6000k 10000k 4.1
+add_output 240p 150k 180k 300k 4.1
+add_output 360p 350k 420k 700k 4.1
+add_output 480p 800k 960k 1600k 4.1
+add_output 720p 2000k 2400k 4000k 4.1
+add_output 1080p 4500k 5400k 9000k 4.1
 add_output 2160p 12000k 14400k 24000k 5.1
 
 echo "Starting one-decode, six-rendition NVENC contribution pipeline."

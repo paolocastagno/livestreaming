@@ -4,10 +4,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ffmpeg procps \
     && rm -rf /var/lib/apt/lists/*
 
-COPY docker/source/start-publishers /usr/local/bin/start-publishers
+COPY docker/source/start-publishers.sh /usr/local/bin/start-publishers.sh
 COPY media/generated/variants/ /opt/media/
 
-RUN chmod 0755 /usr/local/bin/start-publishers \
+RUN chmod 0755 /usr/local/bin/start-publishers.sh \
     && test -s /opt/media/glass-half-240p.mp4 \
     && test -s /opt/media/glass-half-360p.mp4 \
     && test -s /opt/media/glass-half-480p.mp4 \

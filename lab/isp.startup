@@ -5,8 +5,8 @@ ip link set eth1 up
 ip route add 10.0.1.0/24 via 10.0.2.2
 ip route replace default via 10.0.3.2
 sysctl -w net.ipv4.ip_forward=1
-chmod 0755 /usr/local/sbin/set-access-link
+chmod 0755 /usr/local/sbin/set-access-link.sh
 
 # Default 4G-like downlink. The fixed 2 ms models the provider/backbone side.
 tc qdisc replace dev eth0 root netem delay 2ms
-/usr/local/sbin/set-access-link eth1 20mbit 25ms 0.2%
+/usr/local/sbin/set-access-link.sh eth1 20mbit 25ms 0.2%

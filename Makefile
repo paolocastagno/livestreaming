@@ -1,52 +1,52 @@
 .PHONY: help scenarios prepare prepare-gpu build build-gpu up up-gpu up-multi-isp up-multi-isp-gpu gpu-check down status check profile-fiber profile-5g profile-4g profile-dsl profile-congested profile-3g profile-bad traffic-off traffic-light traffic-medium traffic-heavy clean-media
 
 help:
-	@./labctl help
+	@./labctl.sh help
 
 scenarios:
-	@./labctl scenarios
+	@./labctl.sh scenarios
 
 prepare:
-	@./labctl prepare cpu
+	@./labctl.sh prepare cpu
 
 prepare-gpu:
-	@./labctl prepare gpu
+	@./labctl.sh prepare gpu
 
 build:
-	@./labctl build cpu
+	@./labctl.sh build cpu
 
 build-gpu:
-	@./labctl build gpu
+	@./labctl.sh build gpu
 
 up:
-	@./labctl up cpu
+	@./labctl.sh up cpu
 
 up-gpu:
-	@./labctl up gpu
+	@./labctl.sh up gpu
 
 up-multi-isp:
-	@./labctl up multi-isp cpu
+	@./labctl.sh up multi-isp cpu
 
 up-multi-isp-gpu:
-	@./labctl up multi-isp gpu
+	@./labctl.sh up multi-isp gpu
 
 gpu-check:
-	@./labctl gpu-check
+	@./labctl.sh gpu-check
 
 down:
-	@./labctl down
+	@./labctl.sh down
 
 status:
-	@./labctl status
+	@./labctl.sh status
 
 check:
-	@./labctl check
+	@./labctl.sh check
 
 profile-fiber profile-5g profile-4g profile-dsl profile-congested profile-3g profile-bad:
-	@./labctl profile $(@:profile-%=%)
+	@./labctl.sh profile $(@:profile-%=%)
 
 traffic-off traffic-light traffic-medium traffic-heavy:
-	@./labctl traffic $(@:traffic-%=%)
+	@./labctl.sh traffic $(@:traffic-%=%)
 
 clean-media:
-	@./labctl clean-media
+	@./labctl.sh clean-media
