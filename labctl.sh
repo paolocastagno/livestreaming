@@ -557,6 +557,7 @@ case "${1:-help}" in
   down)
     need_docker
     kathara lclean -d "$(lab_dir)"
+    compose --profile "*" down --remove-orphans
     ;;
   status)
     need_docker

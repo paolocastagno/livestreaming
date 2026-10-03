@@ -21,6 +21,7 @@ done
 
 exec chromium \
   --no-sandbox \
+  --test-type \
   --disable-dev-shm-usage \
   --disable-gpu \
   --disable-software-rasterizer=false \
