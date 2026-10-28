@@ -27,12 +27,12 @@ the network and device population without changing the media pipeline.
 ```text
                                       HTTP pull                         shaped residential path
   live contribution                  and cache fill
-  ┌──────────────┐  six RTMP feeds  ┌──────────────┐  HLS/DASH  ┌──────────────┐
-  │ source       │ ───────────────▶ │ origin       │ ◀───────── │ CDN edge     │
-  │ encoder sim. │                  │ ingest +     │            │ reverse proxy│
-  │ 10.0.5.2     │                  │ packagers    │            │ and cache    │
-  └──────────────┘                  │ 10.0.4.2     │            │ 10.0.3.2     │
-                                    └──────────────┘            └──────┬───────┘
+  ┌──────────────┐  six RTMP feeds  ┌──────────────┐  HLS/DASH ┌──────────────┐
+  │ source       │ ───────────────▶ │ origin       │ ◀─────────│ CDN edge     │
+  │ encoder sim. │                  │ ingest +     │           │ reverse proxy│
+  │ 10.0.5.2     │                  │ packagers    │           │ and cache    │
+  └──────────────┘                  │ 10.0.4.2     │           │ 10.0.3.2     │
+                                    └──────────────┘           └──────┬───────┘
                                                                       │
                                                                ┌──────▼───────┐
                                                                │ ISP/core     │
@@ -47,7 +47,7 @@ the network and device population without changing the media pipeline.
                                                                │ 10.0.1.1     │
                                                                └──────┬───────┘
                                                                       │ HOME LAN
-                                                        ┌─────────────┴─────────────┐
+                                                        ┌─────────────┴────────────┐
                                                  ┌──────▼───────┐           ┌──────▼───────┐
                                                  │ client       │           │ background   │
                                                  │ browser/ABR  │           │ TCP traffic  │
@@ -547,3 +547,24 @@ The following are intentional simplifications:
 These boundaries keep the experiment reproducible on a normal workstation
 while preserving the pipeline stages and network effects that drive ABR live
 streaming behavior.
+
+## 9. Physical Fault Injection Subsystem
+
+To establish ground-truth causality for Root Cause Analysis (RCA) and validate attribution algorithms without relying on heuristic mock labels, the testbed provides physical fault injection across the 6 streaming actors:
+
+| Target Actor | Physical Injection Mechanism | Topology Point & Interface | Command / Control |
+|---|---|---|---|
+| **Origin Latency** | Linux 	c qdisc ... netem delay | server container, th1 (ORIGIN domain) | ./labctl.sh fault origin-delay <delay> [jitter] |
+| **CDN Cache Egress** | Linux 	c qdisc ... netem delay | cdn container, th1 (BACKBONE domain) | ./labctl.sh fault cdn-delay <delay> |
+| **CDN Miss Storm** | Nginx cache disk wipe + bypass | cdn /var/cache/nginx/ & HTTP header | ./labctl.sh fault cdn-purge & X-Force-Bypass-Cache: 1 |
+| **Access Link** | Asymmetric HTB shaper + netem | isp th1 (downlink) & home th0 (uplink) | ./labctl.sh fault access <profile> |
+| **Contention Traffic** | Concurrent iperf3 flows | ackground container on HOME LAN | ./labctl.sh fault traffic <level> |
+| **Client Host CPU** | stress-ng CPU worker pegging | Inside client container | ./labctl.sh fault client-cpu <load_pct> [timeout] |
+| **Client ABR Regret** | Controller decision overrides | In-process in ABRController | --inject-abr-fault reckless_upswitch |
+
+### 9.1 Network isolation guarantees
+
+- Injecting delay on server th1 slows down HTTP pull requests from cdn to origin without altering the client's last-mile latency or bandwidth.
+- Client CPU stress runs strictly inside the client container's cgroup using stress-ng, isolating decode stalls without starving background traffic or host daemons.
+- ./labctl.sh fault reset atomically wipes active 
+etem qdiscs on origin and CDN, terminates any running stress-ng processes, and flushes temporary bypass states.

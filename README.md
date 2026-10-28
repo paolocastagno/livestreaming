@@ -294,6 +294,35 @@ A target above the current access capacity intentionally saturates that link.
 The configured value is a target rate; `./labctl.sh traffic status` reports the
 traffic generator state.
 
+## Physical fault injection & Multi-Actor RCA
+
+To support root-cause analysis (RCA) and validate causal fault attribution engines against physical testbed ground truth (avoiding mock heuristic labels), ./labctl.sh fault provides fine-grained impairment controls targeting each actor in the delivery chain:
+
+`ash
+# Query active faults across all devices
+./labctl.sh fault status
+
+# 1. Origin Ingest / Packaging Latency: inject netem delay on server egress (eth1)
+./labctl.sh fault origin-delay 1500ms 150ms
+
+# 2. CDN Cache Impairments:
+./labctl.sh fault cdn-delay 500ms            # delay on edge egress (eth1)
+./labctl.sh fault cdn-purge                  # wipe nginx proxy_cache on disk
+./labctl.sh fault cdn-bypass                 # force cache bypass via custom headers
+
+# 3. Client Host CPU Throttling: stress-ng CPU pegging inside client container
+./labctl.sh fault client-cpu 95 30           # 95% CPU load for 30 seconds
+
+# 4. Access Link & Contention Shortcuts
+./labctl.sh fault access bad                 # throttle access link to 0.6 Mbps
+./labctl.sh fault traffic heavy              # launch 80 Mbps cross-traffic contention
+
+# 5. Reset all faults: tear down netem, kill stress-ng, wipe cache, restore nominal
+./labctl.sh fault reset
+`
+
+For live HTTP sessions, the client reverse proxy and HlsDashClient can also pass the header X-Force-Bypass-Cache: 1 dynamically, triggering Nginx proxy_cache_bypass and proxy_no_cache directives to evaluate cold-start and cache miss storms without restarting containers.
+
 ## Live GPU transcoding
 
 GPU mode is designed for an NVIDIA Linux workstation. It requires Docker

@@ -494,6 +494,7 @@ Usage: ./labctl.sh COMMAND [ARGS]
   profile NAME [TARGET]        Apply an access profile to all or one household
   traffic PRESET [TARGET]      Control cross traffic for all or one household
   traffic DIR RATE [TARGET]    Start custom download, upload, or both traffic
+  fault ACTION [ARGS...]       Inject/control physical faults (origin, cdn, cpu, access, traffic)
   rum-build [SOURCE_DIR]       Build the pinned RUM runtime image
   rum [DURATION] [INTERVAL]    Measure every client (defaults: 60s, 500ms)
   shell DEVICE                 Open a shell in a scenario device
@@ -659,6 +660,114 @@ case "${1:-help}" in
         start) write_client_state "${CLIENT_DEVICES[$index]}" traffic "${traffic_args[1]}-${traffic_args[2]}" ;;
       esac
     done
+    ;;
+  fault)
+    need_docker
+    load_scenario "$(active_scenario)"
+    fault_action=${2:-status}
+    case "$fault_action" in
+      status)
+        echo "===== Active Faults in scenario '$(active_scenario)' ====="
+        echo -n "origin_latency: "
+        kathara exec --wait -d "$(lab_dir)" server -- sh -c 'tc qdisc show dev eth1 | grep -q netem && tc qdisc show dev eth1 || echo "nominal (none)"'
+        echo -n "cdn_delay: "
+        kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tc qdisc show dev eth1 | grep -q netem && tc qdisc show dev eth1 || echo "nominal (none)"'
+        echo -n "cdn_bypass: "
+        read_client_state "all" "fault_cdn_bypass" "off"
+        for client in "${CLIENT_DEVICES[@]}"; do
+          echo -n "$client cpu stress: "
+          kathara exec --wait -d "$(lab_dir)" "$client" -- sh -c 'pgrep stress-ng >/dev/null && echo "ACTIVE (stress-ng running)" || echo "nominal (none)"'
+        done
+        ;;
+      origin-delay)
+        delay=${3:-1500ms}
+        jitter=${4:-150ms}
+        if [[ "$delay" == clear || "$delay" == off || "$delay" == 0ms ]]; then
+          kathara exec --wait -d "$(lab_dir)" server -- tc qdisc del dev eth1 root 2>/dev/null || true
+          write_client_state "all" "fault_origin" "off"
+          echo "origin_latency: CLEARED (nominal)"
+        else
+          kathara exec --wait -d "$(lab_dir)" server -- tc qdisc del dev eth1 root 2>/dev/null || true
+          kathara exec --wait -d "$(lab_dir)" server -- tc qdisc add dev eth1 root netem delay "$delay" "$jitter" distribution normal
+          write_client_state "all" "fault_origin" "${delay}_${jitter}"
+          echo "origin_latency: INJECTED (delay=$delay jitter=$jitter on server eth1)"
+        fi
+        ;;
+      cdn-delay)
+        delay=${3:-1000ms}
+        if [[ "$delay" == clear || "$delay" == off || "$delay" == 0ms ]]; then
+          kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc del dev eth1 root 2>/dev/null || true
+          write_client_state "all" "fault_cdn_delay" "off"
+          echo "cdn_delay: CLEARED (nominal)"
+        else
+          kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc del dev eth1 root 2>/dev/null || true
+          kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc add dev eth1 root netem delay "$delay"
+          write_client_state "all" "fault_cdn_delay" "$delay"
+          echo "cdn_delay: INJECTED (delay=$delay on cdn eth1)"
+        fi
+        ;;
+      cdn-purge)
+        kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'rm -rf /var/cache/nginx/media/* 2>/dev/null || true'
+        echo "cdn_cache: PURGED (/var/cache/nginx/media cleared)"
+        ;;
+      cdn-bypass)
+        mode=${3:-on}
+        if [[ "$mode" == on || "$mode" == 1 || "$mode" == enable ]]; then
+          write_client_state "all" "fault_cdn_bypass" "on"
+          echo "cdn_cache: BYPASS ENABLED (clients will request X-Force-Bypass-Cache: 1)"
+        else
+          write_client_state "all" "fault_cdn_bypass" "off"
+          echo "cdn_cache: BYPASS DISABLED (nominal)"
+        fi
+        ;;
+      client-cpu)
+        load_pct=${3:-95}
+        duration=${4:-60}
+        target=${5:-all}
+        select_households "$target"
+        for index in "${SELECTED_INDEXES[@]}"; do
+          client="${CLIENT_DEVICES[$index]}"
+          if [[ "$load_pct" == clear || "$load_pct" == off || "$load_pct" == 0 ]]; then
+            kathara exec --wait -d "$(lab_dir)" "$client" -- sh -c 'pkill -9 stress-ng 2>/dev/null || true'
+            write_client_state "$client" "fault_cpu" "off"
+            echo "$client cpu stress: CLEARED"
+          else
+            kathara exec --wait -d "$(lab_dir)" "$client" -- sh -c "pkill -9 stress-ng 2>/dev/null || true; nohup stress-ng --cpu 2 --cpu-load $load_pct --timeout ${duration}s >/dev/null 2>&1 &"
+            write_client_state "$client" "fault_cpu" "${load_pct}%_${duration}s"
+            echo "$client cpu stress: INJECTED (load=${load_pct}% duration=${duration}s)"
+          fi
+        done
+        ;;
+      access)
+        profile=${3:-bad}
+        target=${4:-all}
+        "$0" profile "$profile" "$target"
+        ;;
+      traffic)
+        preset=${3:-heavy}
+        target=${4:-all}
+        "$0" traffic "$preset" "$target"
+        ;;
+      reset|clear)
+        echo "===== Resetting all faults to nominal ====="
+        kathara exec --wait -d "$(lab_dir)" server -- tc qdisc del dev eth1 root 2>/dev/null || true
+        write_client_state "all" "fault_origin" "off"
+        kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc del dev eth1 root 2>/dev/null || true
+        write_client_state "all" "fault_cdn_delay" "off"
+        write_client_state "all" "fault_cdn_bypass" "off"
+        for client in "${CLIENT_DEVICES[@]}"; do
+          kathara exec --wait -d "$(lab_dir)" "$client" -- sh -c 'pkill -9 stress-ng 2>/dev/null || true'
+          write_client_state "$client" "fault_cpu" "off"
+        done
+        "$0" traffic off all >/dev/null 2>&1 || true
+        "$0" profile 4g all >/dev/null 2>&1 || true
+        echo "All faults RESET to nominal."
+        ;;
+      *)
+        echo "Usage: ./labctl.sh fault {status|origin-delay DELAY|cdn-delay DELAY|cdn-purge|cdn-bypass on/off|client-cpu LOAD% [SEC]|access PROFILE|traffic PRESET|reset}" >&2
+        exit 2
+        ;;
+    esac
     ;;
   rum-build)
     need_docker
