@@ -298,7 +298,7 @@ traffic generator state.
 
 To support root-cause analysis (RCA) and validate causal fault attribution engines against physical testbed ground truth (avoiding mock heuristic labels), ./labctl.sh fault provides fine-grained impairment controls targeting each actor in the delivery chain:
 
-`ash
+```bash
 # Query active faults across all devices
 ./labctl.sh fault status
 
@@ -319,7 +319,7 @@ To support root-cause analysis (RCA) and validate causal fault attribution engin
 
 # 5. Reset all faults: tear down netem, kill stress-ng, wipe cache, restore nominal
 ./labctl.sh fault reset
-`
+```
 
 For live HTTP sessions, the client reverse proxy and HlsDashClient can also pass the header X-Force-Bypass-Cache: 1 dynamically, triggering Nginx proxy_cache_bypass and proxy_no_cache directives to evaluate cold-start and cache miss storms without restarting containers.
 

@@ -554,17 +554,16 @@ To establish ground-truth causality for Root Cause Analysis (RCA) and validate a
 
 | Target Actor | Physical Injection Mechanism | Topology Point & Interface | Command / Control |
 |---|---|---|---|
-| **Origin Latency** | Linux 	c qdisc ... netem delay | server container, th1 (ORIGIN domain) | ./labctl.sh fault origin-delay <delay> [jitter] |
-| **CDN Cache Egress** | Linux 	c qdisc ... netem delay | cdn container, th1 (BACKBONE domain) | ./labctl.sh fault cdn-delay <delay> |
-| **CDN Miss Storm** | Nginx cache disk wipe + bypass | cdn /var/cache/nginx/ & HTTP header | ./labctl.sh fault cdn-purge & X-Force-Bypass-Cache: 1 |
-| **Access Link** | Asymmetric HTB shaper + netem | isp th1 (downlink) & home th0 (uplink) | ./labctl.sh fault access <profile> |
-| **Contention Traffic** | Concurrent iperf3 flows | ackground container on HOME LAN | ./labctl.sh fault traffic <level> |
-| **Client Host CPU** | stress-ng CPU worker pegging | Inside client container | ./labctl.sh fault client-cpu <load_pct> [timeout] |
-| **Client ABR Regret** | Controller decision overrides | In-process in ABRController | --inject-abr-fault reckless_upswitch |
+| **Origin Latency** | Linux `tc qdisc` ... `netem` delay | `server` container, `eth1` (ORIGIN domain) | `./labctl.sh fault origin-delay <delay> [jitter]` |
+| **CDN Cache Egress** | Linux `tc qdisc` ... `netem` delay | `cdn` container, `eth1` (BACKBONE domain) | `./labctl.sh fault cdn-delay <delay>` |
+| **CDN Miss Storm** | Nginx cache disk wipe + bypass | `cdn` `/var/cache/nginx/` & HTTP header | `./labctl.sh fault cdn-purge` & `X-Force-Bypass-Cache: 1` |
+| **Access Link** | Asymmetric HTB shaper + `netem` | `isp` `eth1` (downlink) & `home` `eth0` (uplink) | `./labctl.sh fault access <profile>` |
+| **Contention Traffic** | Concurrent iperf3 flows | `background` container on HOME LAN | `./labctl.sh fault traffic <level>` |
+| **Client Host CPU** | stress-ng CPU worker pegging | Inside `client` container | `./labctl.sh fault client-cpu <load_pct> [timeout]` |
+| **Client ABR Regret** | Controller decision overrides | In-process in `ABRController` | `--inject-abr-fault reckless_upswitch` |
 
 ### 9.1 Network isolation guarantees
 
-- Injecting delay on server th1 slows down HTTP pull requests from cdn to origin without altering the client's last-mile latency or bandwidth.
+- Injecting delay on server `eth1` slows down HTTP pull requests from `cdn` to origin without altering the client's last-mile latency or bandwidth.
 - Client CPU stress runs strictly inside the client container's cgroup using stress-ng, isolating decode stalls without starving background traffic or host daemons.
-- ./labctl.sh fault reset atomically wipes active 
-etem qdiscs on origin and CDN, terminates any running stress-ng processes, and flushes temporary bypass states.
+- `./labctl.sh fault reset` atomically wipes active `netem` qdiscs on origin and CDN, terminates any running stress-ng processes, and flushes temporary bypass states.
