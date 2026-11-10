@@ -21,7 +21,7 @@ exec ffmpeg -hide_banner -loglevel warning \
   "${input_args[@]}" \
   -map 0:v:0 -map 1:v:0 -map 2:v:0 -map 3:v:0 -map 4:v:0 -map 5:v:0 \
   -map 0:a:0 -c copy -copyts -ss "$start_time" \
-  -f hls -hls_time 4 -hls_list_size 8 \
+  -f hls -hls_time 4 -hls_list_size 24 \
   -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
   -hls_flags delete_segments+independent_segments+program_date_time+temp_file \
   -master_pl_name master.m3u8 \
