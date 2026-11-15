@@ -494,9 +494,14 @@ Usage: ./labctl.sh COMMAND [ARGS]
   profile NAME [TARGET]        Apply an access profile to all or one household
   traffic PRESET [TARGET]      Control cross traffic for all or one household
   traffic DIR RATE [TARGET]    Start custom download, upload, or both traffic
+  traffic hls N [ABR] [dash|hls] [bypass] [TARGET]
+                               Start N competing headless ABR players
   fault ACTION [ARGS...]       Inject/control physical faults (origin, cdn, cpu, access, traffic)
   rum-build [SOURCE_DIR]       Build the pinned RUM runtime image
+  traffic-deploy               Copy the traffic scripts into running background devices
   rum [DURATION] [INTERVAL]    Measure every client (defaults: 60s, 500ms)
+  rum-cgroup CGROUP DURATION INTERVAL OUTPUT
+                               Measure an arbitrary host cgroup v2 path to OUTPUT (CSV)
   shell DEVICE                 Open a shell in a scenario device
   exec DEVICE CMD...           Run a command in a scenario device
   logs                         Tail source, origin, and CDN logs
@@ -641,13 +646,19 @@ case "${1:-help}" in
           traffic_target=${4:-all}
         fi
         ;;
+      hls)
+        [[ "${3:-}" =~ ^[1-9][0-9]*$ ]] || {
+          echo "Usage: ./labctl.sh traffic hls N [ABR=throughput] [dash|hls] [bypass|cache] [TARGET]" >&2; exit 2; }
+        traffic_args=(start-hls "$3" "${4:-throughput}" "${5:-dash}" "${6:-cache}")
+        traffic_target=${7:-all}
+        ;;
       download|both)
         [[ -n "${3:-}" ]] || { echo "Usage: ./labctl.sh traffic ${2} RATE [TARGET]" >&2; exit 2; }
         traffic_args=(start "${2}" "${3}")
         traffic_target=${4:-all}
         ;;
       *)
-        echo "Unknown traffic mode '${2:-}'. Choose off, light, medium, heavy, upload, status, download RATE, or both RATE." >&2
+        echo "Unknown traffic mode '${2:-}'. Choose off, light, medium, heavy, upload, status, download RATE, both RATE, or hls N." >&2
         exit 2
         ;;
     esac
@@ -658,6 +669,7 @@ case "${1:-help}" in
       case "${traffic_args[0]}" in
         stop) write_client_state "${CLIENT_DEVICES[$index]}" traffic off ;;
         start) write_client_state "${CLIENT_DEVICES[$index]}" traffic "${traffic_args[1]}-${traffic_args[2]}" ;;
+        start-hls) write_client_state "${CLIENT_DEVICES[$index]}" traffic "hls${traffic_args[1]}-${traffic_args[3]}-${traffic_args[4]}" ;;
       esac
     done
     ;;
@@ -672,6 +684,10 @@ case "${1:-help}" in
         kathara exec --wait -d "$(lab_dir)" server -- sh -c 'tc qdisc show dev eth1 | grep -q netem && tc qdisc show dev eth1 || echo "nominal (none)"'
         echo -n "cdn_delay: "
         kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tc qdisc show dev eth1 | grep -q netem && tc qdisc show dev eth1 || echo "nominal (none)"'
+        echo -n "edge_delay: "
+        read_client_state "all" "fault_edge_delay" "off"
+        echo -n "origin_proc_delay: "
+        read_client_state "all" "fault_origin_proc" "off"
         echo -n "cdn_bypass: "
         read_client_state "all" "fault_cdn_bypass" "off"
         for client in "${CLIENT_DEVICES[@]}"; do
@@ -688,7 +704,12 @@ case "${1:-help}" in
           echo "origin_latency: CLEARED (nominal)"
         else
           kathara exec --wait -d "$(lab_dir)" server -- tc qdisc del dev eth1 root 2>/dev/null || true
-          kathara exec --wait -d "$(lab_dir)" server -- tc qdisc add dev eth1 root netem delay "$delay" "$jitter" distribution normal
+          if [[ "$jitter" == 0 || "$jitter" == 0ms ]]; then
+            # netem rejects 'distribution' without a jitter
+            kathara exec --wait -d "$(lab_dir)" server -- tc qdisc add dev eth1 root netem delay "$delay"
+          else
+            kathara exec --wait -d "$(lab_dir)" server -- tc qdisc add dev eth1 root netem delay "$delay" "$jitter" distribution normal
+          fi
           write_client_state "all" "fault_origin" "${delay}_${jitter}"
           echo "origin_latency: INJECTED (delay=$delay jitter=$jitter on server eth1)"
         fi
@@ -696,7 +717,8 @@ case "${1:-help}" in
       cdn-delay)
         delay=${3:-1000ms}
         if [[ "$delay" == clear || "$delay" == off || "$delay" == 0ms ]]; then
-          kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc del dev eth1 root 2>/dev/null || true
+          # restore the fixed 2 ms backbone delay installed by cdn.startup
+          kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc replace dev eth1 root netem delay 2ms
           write_client_state "all" "fault_cdn_delay" "off"
           echo "cdn_delay: CLEARED (nominal)"
         else
@@ -704,6 +726,58 @@ case "${1:-help}" in
           kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc add dev eth1 root netem delay "$delay"
           write_client_state "all" "fault_cdn_delay" "$delay"
           echo "cdn_delay: INJECTED (delay=$delay on cdn eth1)"
+        fi
+        ;;
+      edge-delay)
+        # Edge *processing* delay: only HTTP request packets (client->CDN, TCP dport 80,
+        # IP length >= 128 B) are delayed on the ISP backbone egress, so TTFB grows by
+        # DELAY while ACKs and the transfer rate are untouched (unlike cdn-delay, which
+        # delays every packet and therefore also the TCP throughput).
+        delay=${3:-500ms}
+        for isp in "${ISP_DEVICES[@]}"; do
+          if [[ "$delay" == clear || "$delay" == off || "$delay" == 0ms ]]; then
+            kathara exec --wait -d "$(lab_dir)" "$isp" -- sh -c 'tc qdisc del dev eth0 root 2>/dev/null; tc qdisc add dev eth0 root netem delay 2ms'
+          else
+            [[ "$delay" =~ ^[0-9]+ms$ ]] || { echo "edge-delay expects milliseconds, e.g. 500ms" >&2; exit 2; }
+            kathara exec --wait -d "$(lab_dir)" "$isp" -- sh -c "
+              tc qdisc del dev eth0 root 2>/dev/null
+              tc qdisc add dev eth0 root handle 1: prio bands 3 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+              tc qdisc add dev eth0 parent 1:1 handle 10: netem delay 2ms
+              tc qdisc add dev eth0 parent 1:2 handle 20: netem delay \$((2 + ${delay%ms}))ms
+              for m in '0x0080 0xff80' '0x0100 0xff00' '0x0200 0xfe00' '0x0400 0xfc00'; do
+                tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip protocol 6 0xff match ip dport 80 0xffff match u16 \$m at 2 flowid 1:2
+              done"
+          fi
+        done
+        if [[ "$delay" == clear || "$delay" == off || "$delay" == 0ms ]]; then
+          write_client_state "all" "fault_edge_delay" "off"
+          echo "edge_delay: CLEARED (nominal)"
+        else
+          write_client_state "all" "fault_edge_delay" "$delay"
+          echo "edge_delay: INJECTED (request delay=$delay on ISP backbone egress)"
+        fi
+        ;;
+      origin-proc-delay)
+        # Origin *processing* delay: only HTTP requests CDN->origin (TCP dport 80, IP length
+        # >= 128 B) are delayed on the CDN's ORIGIN-side interface (eth0), so the TTFB of
+        # cache misses and playlist fetches grows by DELAY while the origin->CDN transfer rate
+        # is untouched. 'origin-delay' instead delays every packet (RTT and TCP throughput).
+        delay=${3:-800ms}
+        if [[ "$delay" == clear || "$delay" == off || "$delay" == 0ms ]]; then
+          kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tc qdisc del dev eth0 root 2>/dev/null || true'
+          write_client_state "all" "fault_origin_proc" "off"
+          echo "origin_proc_delay: CLEARED (nominal)"
+        else
+          [[ "$delay" =~ ^[0-9]+ms$ ]] || { echo "origin-proc-delay expects milliseconds, e.g. 800ms" >&2; exit 2; }
+          kathara exec --wait -d "$(lab_dir)" cdn -- sh -c "
+            tc qdisc del dev eth0 root 2>/dev/null
+            tc qdisc add dev eth0 root handle 1: prio bands 3 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+            tc qdisc add dev eth0 parent 1:2 handle 20: netem delay ${delay}
+            for m in '0x0080 0xff80' '0x0100 0xff00' '0x0200 0xfe00' '0x0400 0xfc00'; do
+              tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip protocol 6 0xff match ip dport 80 0xffff match u16 \$m at 2 flowid 1:2
+            done"
+          write_client_state "all" "fault_origin_proc" "$delay"
+          echo "origin_proc_delay: INJECTED (request delay=$delay on cdn eth0)"
         fi
         ;;
       cdn-purge)
@@ -752,8 +826,10 @@ case "${1:-help}" in
         echo "===== Resetting all faults to nominal ====="
         kathara exec --wait -d "$(lab_dir)" server -- tc qdisc del dev eth1 root 2>/dev/null || true
         write_client_state "all" "fault_origin" "off"
-        kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc del dev eth1 root 2>/dev/null || true
+        kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc replace dev eth1 root netem delay 2ms
         write_client_state "all" "fault_cdn_delay" "off"
+        "$0" fault edge-delay off >/dev/null 2>&1 || true
+        "$0" fault origin-proc-delay off >/dev/null 2>&1 || true
         write_client_state "all" "fault_cdn_bypass" "off"
         for client in "${CLIENT_DEVICES[@]}"; do
           kathara exec --wait -d "$(lab_dir)" "$client" -- sh -c 'pkill -9 stress-ng 2>/dev/null || true'
@@ -764,7 +840,7 @@ case "${1:-help}" in
         echo "All faults RESET to nominal."
         ;;
       *)
-        echo "Usage: ./labctl.sh fault {status|origin-delay DELAY|cdn-delay DELAY|cdn-purge|cdn-bypass on/off|client-cpu LOAD% [SEC]|access PROFILE|traffic PRESET|reset}" >&2
+        echo "Usage: ./labctl.sh fault {status|origin-delay DELAY [JITTER]|cdn-delay DELAY|edge-delay DELAY|origin-proc-delay DELAY|cdn-purge|cdn-bypass on/off|client-cpu LOAD% [SEC]|access PROFILE|traffic PRESET|reset}" >&2
         exit 2
         ;;
     esac
@@ -776,6 +852,31 @@ case "${1:-help}" in
     ;;
   rum)
     run_rum_measurement "${@:2}"
+    ;;
+  traffic-deploy)
+    # Hot-deploy the traffic scripts into running background devices (no lab restart).
+    need_docker
+    load_scenario "$(active_scenario)"
+    for bg in "${BACKGROUND_DEVICES[@]}"; do
+      cid=$(client_container_id "$bg")
+      docker cp "$PROJECT_DIR/docker/traffic/background-traffic.sh" "$cid:/usr/local/bin/background-traffic.sh"
+      docker cp "$PROJECT_DIR/docker/traffic/hls-background-client.py" "$cid:/usr/local/bin/hls-background-client.py"
+      docker exec "$cid" chmod 0755 /usr/local/bin/background-traffic.sh /usr/local/bin/hls-background-client.py
+      echo "$bg: traffic scripts deployed"
+    done
+    ;;
+  rum-cgroup)
+    # Measure an arbitrary host cgroup (e.g. the systemd scope running a host-side player).
+    need_docker
+    [[ $# -eq 5 ]] || { echo "Usage: ./labctl.sh rum-cgroup CGROUP_PATH DURATION INTERVAL OUTPUT_CSV" >&2; exit 2; }
+    [[ -d "$2" ]] || { echo "No such cgroup: $2" >&2; exit 1; }
+    out_dir=$(cd "$(dirname "$5")" && pwd)
+    echo "RUM output: $out_dir/$(basename "$5")"
+    exec docker run --rm --privileged --cgroupns=host \
+      --mount type=bind,source=/sys/fs/cgroup,target=/sys/fs/cgroup \
+      --mount type=bind,source="$out_dir",target=/output \
+      --entrypoint /usr/local/bin/rum "$RUM_IMAGE" \
+      --duration "$3" --interval "$4" --cgroup "$2" --output "/output/$(basename "$5")"
     ;;
   shell)
     need_docker

@@ -16,6 +16,18 @@ stop_all() {
     rm -f "$pid_file"
   done
   pkill -f 'iperf3.*10[.]0[.]3[.]2' 2>/dev/null || true
+  pkill -TERM -f 'hls-background-client' 2>/dev/null || true
+}
+
+start_hls() {
+  local n=$1 abr=${2:-throughput} protocol=${3:-dash} cache=${4:-cache}
+  local extra=()
+  [[ "$cache" == bypass ]] && extra=(--bypass)
+  nohup python3 /usr/local/bin/hls-background-client.py --n "$n" --abr "$abr" \
+    --protocol "$protocol" "${extra[@]}" --server "http://$SERVER" \
+    --seed "$RANDOM" --log "$LOG_DIR/hls.jsonl" \
+    >"$LOG_DIR/hls.log" 2>&1 &
+  echo $! >"$PID_DIR/hls.pid"
 }
 
 normalize_rate() {
@@ -55,6 +67,11 @@ show_status() {
     fi
     echo "$direction: $state"
   done
+  if [[ -s "$PID_DIR/hls.pid" ]] && kill -0 "$(cat "$PID_DIR/hls.pid")" 2>/dev/null; then
+    echo "hls: running (pid $(cat "$PID_DIR/hls.pid"))"
+  else
+    echo "hls: stopped"
+  fi
 }
 
 case "${1:-status}" in
@@ -71,6 +88,19 @@ case "${1:-status}" in
     sleep 1
     show_status
     ;;
+  start-hls)
+    n=${2:-}
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "N must be a positive integer." >&2; exit 2; }
+    stop_all
+    sleep 0.5
+    : >"$LOG_DIR/hls.jsonl"
+    start_hls "$n" "${3:-throughput}" "${4:-dash}" "${5:-cache}"
+    sleep 1
+    show_status
+    ;;
+  hls-log)
+    cat "$LOG_DIR/hls.jsonl" 2>/dev/null || true
+    ;;
   stop)
     stop_all
     echo "Background traffic stopped."
@@ -79,7 +109,7 @@ case "${1:-status}" in
     show_status
     ;;
   *)
-    echo "Usage: background-traffic.sh start {download|upload|both} RATE | stop | status" >&2
+    echo "Usage: background-traffic.sh start {download|upload|both} RATE | start-hls N [ABR] [dash|hls] [cache|bypass] | hls-log | stop | status" >&2
     exit 2
     ;;
 esac
