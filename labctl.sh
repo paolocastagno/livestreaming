@@ -496,6 +496,15 @@ clear_upstream() {
   echo "upstream: CLEARED (nominal: unshaped, 2 ms)"
 }
 
+# Netem delay of a 'tc qdisc show' output (stdin) in ms: tc normalises the unit (1000ms -> "1s",
+# 1500ms -> "1.5s"), so the requested and the installed delays are compared as numbers.
+tc_delay_ms() {
+  awk '{for (i = 1; i < NF; i++) if ($i == "delay") { v = $(i + 1)
+    if (v ~ /us$/) { sub(/us$/, "", v); print v / 1000 } else if (v ~ /ms$/) { sub(/ms$/, "", v); print v + 0 }
+    else if (v ~ /s$/) { sub(/s$/, "", v); print v * 1000 }
+    exit }}'
+}
+
 check_crowd_players() {
   local abr=$1 proto=$2 cache=$3 spread=$4 ramp=${5:-4}
   [[ "$abr" =~ ^(throughput|buffer|hybrid)$ ]] || { echo "ABR must be throughput, buffer, or hybrid." >&2; exit 2; }
@@ -530,7 +539,8 @@ crowd_traffic() {
       [[ "${2:-}" =~ ^[0-9]+ms$ ]] || { echo "Usage: ./labctl.sh traffic crowd delay DELAY (e.g. 30ms)" >&2; exit 2; }
       out=$(kathara exec --wait -d "$(lab_dir)" "$dev" -- sh -c "tc qdisc replace dev eth0 root netem delay $2 limit 10000; tc qdisc show dev eth0")
       # without the delay the crowd flows would have a ~2 ms RTT and take most of a shared FIFO
-      grep -q "delay $2" <<<"$out" || { printf '%s\n' "$out" >&2; echo "crowd: FAILED, delay $2 not in place on $dev" >&2; exit 1; }
+      [[ "$(tc_delay_ms <<<"$out")" == "$((10#${2%ms}))" ]] || {
+        printf '%s\n' "$out" >&2; echo "crowd: FAILED, delay $2 not in place on $dev" >&2; exit 1; }
       write_client_state "all" "crowd_delay" "$2"
       echo "crowd: one-way delay on the crowd egress = $2"
       ;;
@@ -989,7 +999,7 @@ case "${1:-help}" in
           write_client_state "all" "crowd" "starting"
           # one exec for the crowd RTT and the players (the fault onset is timed by the caller)
           out=$(kathara exec --wait -d "$(lab_dir)" "$crowd_dev" -- sh -c "${crowd_delay:+tc qdisc replace dev eth0 root netem delay $crowd_delay limit 10000 && }/usr/local/bin/background-traffic.sh start-hls $crowd_n $abr $proto $cache $spread $ramp; tc qdisc show dev eth0")
-          if ! grep -q "hls: running" <<<"$out" || { [[ -n "$crowd_delay" ]] && ! grep -q "delay $crowd_delay" <<<"$out"; }; then
+          if ! grep -q "hls: running" <<<"$out" || { [[ -n "$crowd_delay" ]] && [[ "$(tc_delay_ms <<<"$out")" != "$((10#${crowd_delay%ms}))" ]]; }; then
             printf '%s\n' "$out" >&2
             echo "crowd: FAILED, players or crowd delay not in place on $crowd_dev" >&2
             exit 1
