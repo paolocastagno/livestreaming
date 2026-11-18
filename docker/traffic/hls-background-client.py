@@ -19,7 +19,8 @@ periodicity but de-phased bursts.  The default 0 keeps them synchronised.
 
 Usage:
   hls-background-client.py --n 3 [--abr throughput|buffer|hybrid] [--protocol dash|hls]
-                           [--bypass] [--phase-spread S] [--server http://10.0.3.2] [--log FILE]
+                           [--bypass] [--phase-spread S] [--ramp-sec R] [--server http://10.0.3.2]
+                           [--log FILE]
 
 One JSON line per downloaded segment is appended to --log:
   {"t": unix_s, "w": worker, "rep": id, "bps": declared, "bytes": n, "dl": s, "ttfb": s, "buf": s}
@@ -131,6 +132,10 @@ class DashSource:
             raise RuntimeError("no video representations in MPD")
         self.reps = sorted(reps, key=lambda x: x.bandwidth)
 
+    def refresh_edge(self, rep: Rep) -> None:
+        """Live-edge refresh: the MPD lists every representation (one request)."""
+        self.refresh()
+
     def segment_url(self, rep: Rep, number: int) -> str:
         return re.sub(r"\$Number(%0(\d+)d)?\$", lambda m: str(number).zfill(int(m.group(2) or 0)), rep.media_tmpl)
 
@@ -179,6 +184,12 @@ class HlsSource:
         for r in self.reps:
             self.refresh_rep(r)
 
+    def refresh_edge(self, rep: Rep) -> None:
+        """Live-edge refresh: only the reference playlist, like a player reloading its current variant
+        (the chosen variant is reloaded before a fetch when stale). Reloading all variants every second
+        would add ~6 uncached playlist requests per player and second at the CDN and origin."""
+        self.refresh_rep(rep)
+
     def available(self, rep: Rep) -> tuple[int, int]:
         seq, uris, _, _ = self.lists[rep.rep_id]
         return seq, seq + len(uris) - 1
@@ -210,7 +221,13 @@ def choose(reps: list[Rep], thr_bps: float, buf: float, mode: str, safety: float
 
 def worker(idx: int, args: argparse.Namespace, log) -> None:
     rnd = random.Random(args.seed * 1000 + idx)
-    time.sleep(rnd.uniform(0.0, args.stagger) * idx)
+    # start offset (interruptible: a stop must not wait for it)
+    if args.ramp_sec > 0:  # all workers start within ramp_sec (large crowds at full strength quickly)
+        STOP.wait(rnd.uniform(0.0, args.ramp_sec))
+    else:
+        STOP.wait(rnd.uniform(0.0, args.stagger) * idx)
+    if STOP.is_set():
+        return
     headers = {"X-Force-Bypass-Cache": "1"} if args.bypass else {}
     http = Http(args.server, headers)
     try:
@@ -248,7 +265,7 @@ def worker(idx: int, args: argparse.Namespace, log) -> None:
                 waited = True
                 STOP.wait(0.5)
                 if time.monotonic() - last_refresh > 1.0:
-                    src.refresh()
+                    src.refresh_edge(ref)
                     last_refresh = time.monotonic()
                 drain()
             if STOP.is_set():
@@ -284,13 +301,13 @@ def worker(idx: int, args: argparse.Namespace, log) -> None:
                 STOP.wait(0.2)
                 drain()
             if time.monotonic() - last_refresh > src.seg_dur:
-                src.refresh()
+                src.refresh_edge(ref)
                 last_refresh = time.monotonic()
         except Exception as exc:  # noqa: BLE001
             print(f"[bg{idx}] error: {exc}", file=sys.stderr)
             STOP.wait(1.0)
             try:
-                src.refresh()
+                src.refresh_edge(ref)
                 last_refresh = time.monotonic()
             except Exception:  # noqa: BLE001
                 pass
@@ -305,6 +322,8 @@ def main() -> None:
     ap.add_argument("--server", default="http://10.0.3.2")
     ap.add_argument("--buffer-max", type=float, default=10.0)
     ap.add_argument("--stagger", type=float, default=1.0, help="max random start offset per worker index [s]")
+    ap.add_argument("--ramp-sec", type=float, default=0.0,
+                    help="start every worker within this many seconds (0: --stagger per worker index)")
     ap.add_argument("--phase-spread", type=float, default=0.0,
                     help="max fixed per-worker wait after a segment is published [s] (0: synchronised)")
     ap.add_argument("--seed", type=int, default=0)
@@ -318,8 +337,9 @@ def main() -> None:
             t.start()
         while not STOP.is_set():
             STOP.wait(0.5)
+        deadline = time.monotonic() + 3.0  # one deadline for all workers, not 3 s each
         for t in threads:
-            t.join(timeout=3.0)
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
 if __name__ == "__main__":

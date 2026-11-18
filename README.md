@@ -313,6 +313,7 @@ unshaped by default, so the crowd affects a player only after
 ./labctl.sh traffic crowd 5                         # DASH: separate cache keys
 ./labctl.sh traffic crowd 5 throughput hls          # flash crowd on the same stream
 ./labctl.sh traffic crowd 5 throughput dash cache 4 # de-phased by up to 4 s
+./labctl.sh traffic crowd 5 throughput dash cache 0 8  # all players start within 8 s (default 4)
 ./labctl.sh traffic crowd delay 30ms                # crowd RTT (egress delay)
 ./labctl.sh traffic crowd status | log | off
 
@@ -323,7 +324,9 @@ unshaped by default, so the crowd affects a player only after
 
 Live players fetch each segment as soon as it is published, so a synchronised
 crowd (`spread=0`) loads the shared link exactly when the measured player
-downloads; `spread=S` gives every crowd player a fixed offset in `[0, S]` s.
+downloads; `spread=S` gives every crowd player a fixed offset in `[0, S]` s. All crowd players start
+within `ramp` seconds (default 4, one segment), and `traffic crowd off` returns only once they
+have exited.
 `fault upstream` and `fault cdn-delay` both own the `cdn eth1` root qdisc and
 are mutually exclusive; `fault reset` clears both and stops the crowd.
 

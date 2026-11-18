@@ -497,17 +497,20 @@ clear_upstream() {
 }
 
 check_crowd_players() {
-  local abr=$1 proto=$2 cache=$3 spread=$4
+  local abr=$1 proto=$2 cache=$3 spread=$4 ramp=${5:-4}
   [[ "$abr" =~ ^(throughput|buffer|hybrid)$ ]] || { echo "ABR must be throughput, buffer, or hybrid." >&2; exit 2; }
   [[ "$proto" =~ ^(dash|hls)$ ]] || { echo "Protocol must be dash or hls." >&2; exit 2; }
   [[ "$cache" =~ ^(cache|bypass)$ ]] || { echo "Cache mode must be cache or bypass." >&2; exit 2; }
   [[ "$spread" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Phase spread must be seconds, e.g. 0 or 4." >&2; exit 2; }
+  [[ "$ramp" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Ramp must be seconds, e.g. 4." >&2; exit 2; }
 }
 
 # Crowd: other subscribers of the CDN edge outside every household, N headless ABR players on the
 # crowd device (same generator as the household background, see docker/traffic). With proto=dash
 # they load the shared link but not the HLS player's cache keys; proto=hls is the flash crowd of the
-# same live event (shared cache). Their segments cross only the shared cdn eth1 queue.
+# same live event (shared cache). Their segments cross only the shared cdn eth1 queue. All players
+# start within RAMP s (default 4: one segment), so a large crowd is at full strength quickly.
+# The state is set before starting, so that 'fault reset' stops a crowd whose start went wrong.
 crowd_traffic() {
   local dev out action=${1:-status}
   dev=$(crowd_device)
@@ -531,12 +534,13 @@ crowd_traffic() {
       ;;
     *)
       [[ "$action" =~ ^[1-9][0-9]*$ ]] || {
-        echo "Usage: ./labctl.sh traffic crowd {N [ABR] [dash|hls] [cache|bypass] [PHASE_SPREAD_S]|delay DELAY|status|log|off}" >&2
+        echo "Usage: ./labctl.sh traffic crowd {N [ABR] [dash|hls] [cache|bypass] [PHASE_SPREAD_S] [RAMP_S]|delay DELAY|status|log|off}" >&2
         exit 2
       }
-      check_crowd_players "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}"
+      check_crowd_players "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}" "${6:-4}"
+      write_client_state "all" "crowd" "starting"
       out=$(kathara exec --wait -d "$(lab_dir)" "$dev" -- /usr/local/bin/background-traffic.sh start-hls \
-        "$action" "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}")
+        "$action" "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}" "${6:-4}")
       printf '%s\n' "$out"
       grep -q "hls: running" <<<"$out" || { echo "crowd: FAILED, players not running on $dev" >&2; exit 1; }
       write_client_state "all" "crowd" "hls${action}-${3:-dash}-${4:-cache}-spread${5:-0}"
@@ -618,7 +622,7 @@ Usage: ./labctl.sh COMMAND [ARGS]
   traffic DIR RATE [TARGET]    Start custom download, upload, or both traffic
   traffic hls N [ABR] [dash|hls] [bypass] [TARGET]
                                Start N competing headless ABR players
-  traffic crowd N [ABR] [dash|hls] [cache|bypass] [PHASE_SPREAD_S]
+  traffic crowd N [ABR] [dash|hls] [cache|bypass] [PHASE_SPREAD_S] [RAMP_S]
                                Start N ABR players of other CDN subscribers
                                (crowd device, outside every household)
   traffic crowd {delay DELAY|status|log|off}
@@ -627,7 +631,7 @@ Usage: ./labctl.sh COMMAND [ARGS]
   fault upstream RATE [qdisc=fifo|fqcodel|sfq] [buffer_ms=100] | off
                                Shape the shared CDN->provider link (cdn eth1)
   fault crowd N RATE [qdisc=..] [buffer_ms=..] [delay=..] [proto=dash|hls]
-              [cache=cache|bypass] [spread=S] [abr=..] | off
+              [cache=cache|bypass] [spread=S] [ramp=4] [abr=..] | off
                                Shared-link congestion by N crowd players
   rum-build [SOURCE_DIR]       Build the pinned RUM runtime image
   traffic-deploy               Copy the traffic scripts into running background/crowd devices
@@ -951,7 +955,7 @@ case "${1:-help}" in
           crowd_traffic off
         else
           [[ "${3:-}" =~ ^[1-9][0-9]*$ && -n "${4:-}" ]] || {
-            echo "Usage: ./labctl.sh fault crowd N RATE [qdisc=fifo|fqcodel|sfq] [buffer_ms=100] [delay=20ms] [proto=dash|hls] [cache=cache|bypass] [spread=0] [abr=throughput] | off" >&2
+            echo "Usage: ./labctl.sh fault crowd N RATE [qdisc=fifo|fqcodel|sfq] [buffer_ms=100] [delay=20ms] [proto=dash|hls] [cache=cache|bypass] [spread=0] [ramp=4] [abr=throughput] | off" >&2
             exit 2
           }
           crowd_n=$3
@@ -961,6 +965,7 @@ case "${1:-help}" in
           proto=dash
           cache=cache
           spread=0
+          ramp=4
           abr=throughput
           for opt in "${@:5}"; do
             case "$opt" in
@@ -970,16 +975,18 @@ case "${1:-help}" in
               proto=*) proto=${opt#*=} ;;
               cache=*) cache=${opt#*=} ;;
               spread=*) spread=${opt#*=} ;;
+              ramp=*) ramp=${opt#*=} ;;
               abr=*) abr=${opt#*=} ;;
               *) echo "Unknown option '$opt' for fault crowd." >&2; exit 2 ;;
             esac
           done
-          check_crowd_players "$abr" "$proto" "$cache" "$spread"
+          check_crowd_players "$abr" "$proto" "$cache" "$spread" "$ramp"
           [[ -z "$crowd_delay" || "$crowd_delay" =~ ^[0-9]+ms$ ]] || { echo "delay must be milliseconds, e.g. 30ms." >&2; exit 2; }
           crowd_dev=$(crowd_device)
           apply_upstream "$4" "$qdisc" "$buffer_ms"
+          write_client_state "all" "crowd" "starting"
           # one exec for the crowd RTT and the players (the fault onset is timed by the caller)
-          out=$(kathara exec --wait -d "$(lab_dir)" "$crowd_dev" -- sh -c "${crowd_delay:+tc qdisc replace dev eth0 root netem delay $crowd_delay limit 10000 && }/usr/local/bin/background-traffic.sh start-hls $crowd_n $abr $proto $cache $spread; tc qdisc show dev eth0")
+          out=$(kathara exec --wait -d "$(lab_dir)" "$crowd_dev" -- sh -c "${crowd_delay:+tc qdisc replace dev eth0 root netem delay $crowd_delay limit 10000 && }/usr/local/bin/background-traffic.sh start-hls $crowd_n $abr $proto $cache $spread $ramp; tc qdisc show dev eth0")
           if ! grep -q "hls: running" <<<"$out" || { [[ -n "$crowd_delay" ]] && ! grep -q "delay $crowd_delay" <<<"$out"; }; then
             printf '%s\n' "$out" >&2
             echo "crowd: FAILED, players or crowd delay not in place on $crowd_dev" >&2
@@ -1075,7 +1082,7 @@ case "${1:-help}" in
     for bg in "${BACKGROUND_DEVICES[@]}" "${CROWD_DEVICES[@]}"; do
       if [[ " ${CROWD_DEVICES[*]} " == *" $bg "* ]]; then
         cid=$(client_container_id "$bg" 2>/dev/null) || {
-          echo "$bg: not running (lab started without the crowd device), skipped"
+          echo "$bg: not found or not unique (lab started without the crowd device?), skipped"
           continue
         }
       else
