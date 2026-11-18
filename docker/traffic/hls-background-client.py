@@ -196,6 +196,10 @@ class HlsSource:
 
     def segment_url(self, rep: Rep, number: int) -> str:
         seq, uris, _, _ = self.lists[rep.rep_id]
+        if not seq <= number < seq + len(uris):
+            # outside the live window (a negative index would silently pick another segment): the
+            # worker refreshes and restarts from the window, like a live skip
+            raise LookupError(f"segment {number} outside the playlist window {seq}..{seq + len(uris) - 1}")
         return uris[number - seq]
 
 

@@ -528,7 +528,9 @@ crowd_traffic() {
       ;;
     delay)
       [[ "${2:-}" =~ ^[0-9]+ms$ ]] || { echo "Usage: ./labctl.sh traffic crowd delay DELAY (e.g. 30ms)" >&2; exit 2; }
-      kathara exec --wait -d "$(lab_dir)" "$dev" -- tc qdisc replace dev eth0 root netem delay "$2" limit 10000
+      out=$(kathara exec --wait -d "$(lab_dir)" "$dev" -- sh -c "tc qdisc replace dev eth0 root netem delay $2 limit 10000; tc qdisc show dev eth0")
+      # without the delay the crowd flows would have a ~2 ms RTT and take most of a shared FIFO
+      grep -q "delay $2" <<<"$out" || { printf '%s\n' "$out" >&2; echo "crowd: FAILED, delay $2 not in place on $dev" >&2; exit 1; }
       write_client_state "all" "crowd_delay" "$2"
       echo "crowd: one-way delay on the crowd egress = $2"
       ;;
