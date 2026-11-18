@@ -55,13 +55,17 @@ the network and device population without changing the media pipeline.
                                                  └──────────────┘           └──────────────┘
 ```
 
+The `crowd` node (`10.0.3.10`, other subscribers of the CDN edge) is attached
+to the BACKBONE segment next to the CDN and the ISP router: its segments share
+the CDN egress `cdn eth1` with the household's, never the access link (§3.9).
+
 The `single-isp` topology contains five emulated Ethernet domains:
 
 | Domain | Subnet | Attached components | Purpose |
 |---|---|---|---|
 | `CONTRIBUTION` | `10.0.5.0/24` | source, origin | Live RTMP transport from encoder to origin |
 | `ORIGIN` | `10.0.4.0/24` | origin, CDN | Private origin-facing CDN connection |
-| `BACKBONE` | `10.0.3.0/24` | CDN, ISP | CDN point-of-presence to provider/core connection |
+| `BACKBONE` | `10.0.3.0/24` | CDN, ISP, crowd | CDN point-of-presence to provider/core connection |
 | `ACCESS` | `10.0.2.0/24` | ISP, home gateway | Residential WAN and shaped last mile |
 | `HOME` | `10.0.1.0/24` | home gateway, player, background client | Subscriber's local network |
 
@@ -86,7 +90,7 @@ provider path. The domains added or changed relative to `single-isp` are:
 
 | Domain | Subnet | Attached components | Purpose |
 |---|---|---|---|
-| `PEERING` | `10.0.3.0/24` | CDN, ISP 1, ISP 2 | Shared CDN PoP/private-peering or IXP fabric |
+| `PEERING` | `10.0.3.0/24` | CDN, ISP 1, ISP 2, crowd | Shared CDN PoP/private-peering or IXP fabric |
 | `ACCESS` | `10.0.2.0/24` | ISP 1, home 1 | Independently shaped subscriber access path 1 |
 | `HOME` | `10.0.1.0/24` | home 1, client 1, background 1 | Subscriber LAN 1 |
 | `ACCESS2` | `10.1.2.0/24` | ISP 2, home 2 | Independently shaped subscriber access path 2 |
@@ -431,6 +435,33 @@ player, the traffic crosses exactly the same ISP and access queues as that
 player's media. It models another household member downloading a game,
 synchronizing cloud data, or performing another sustained transfer.
 
+### 3.9 Crowd of other CDN subscribers
+
+The `crowd` node at `10.0.3.10` stands for the other viewers of the same CDN
+edge, outside every household. It is attached to the CDN-side segment
+(`BACKBONE`, `PEERING` in multi-isp) and reaches the edge directly, so its
+traffic shares one queue with the players' media: the CDN egress towards the
+provider(s), `cdn eth1`. Residential access links, home gateways and the
+households' background devices are untouched.
+
+That egress is unshaped by default (only the fixed 2 ms delay), so it never
+limits a player. `./labctl.sh fault upstream RATE` turns it into a shared
+bottleneck: HTB at `RATE`, the 2 ms delay, then the queue of the shared link —
+a drop-tail FIFO holding `buffer_ms` at `RATE` (default 100 ms, a deep core
+buffer), `fq_codel`, or SFQ. Unlike the per-flow SFQ of the access links, a
+shared FIFO delays every flow by the same standing queue, including the
+player's requests and first bytes.
+
+The crowd runs the same headless ABR generator as the household background
+(`traffic crowd N ...`). With DASH it loads the link without touching the HLS
+player's cache keys; with HLS it is the flash crowd of the same live event and
+warms the edge cache for the player (`proxy_cache_lock` makes concurrent misses
+wait for one fill). A one-way delay on the crowd egress (default 20 ms,
+`traffic crowd delay`) gives the crowd residential RTTs: under a FIFO, flows
+with a 2 ms RTT would otherwise take most of the capacity. Crowd players at the
+live edge request each segment right after publication, in step with the
+measured player; `spread=S` de-phases them by a fixed per-player offset.
+
 ## 4. Playback request flow
 
 A typical DASH playback follows these steps:
@@ -559,6 +590,7 @@ To establish ground-truth causality for Root Cause Analysis (RCA) and validate a
 | **CDN Miss Storm** | Nginx cache disk wipe + bypass | `cdn` `/var/cache/nginx/` & HTTP header | `./labctl.sh fault cdn-purge` & `X-Force-Bypass-Cache: 1` |
 | **Access Link** | Asymmetric HTB shaper + `netem` | `isp` `eth1` (downlink) & `home` `eth0` (uplink) | `./labctl.sh fault access <profile>` |
 | **Contention Traffic** | Concurrent iperf3 flows | `background` container on HOME LAN | `./labctl.sh fault traffic <level>` |
+| **Shared-link Congestion** | HTB + FIFO/fq_codel/SFQ on the CDN egress, N crowd ABR players | `cdn` `eth1`, `crowd` container on BACKBONE/PEERING | `./labctl.sh fault crowd <n> <rate> [opts]` |
 | **Client Host CPU** | stress-ng CPU worker pegging | Inside `client` container | `./labctl.sh fault client-cpu <load_pct> [timeout]` |
 | **Client ABR Regret** | Controller decision overrides | In-process in `ABRController` | `--inject-abr-fault reckless_upswitch` |
 
@@ -567,3 +599,4 @@ To establish ground-truth causality for Root Cause Analysis (RCA) and validate a
 - Injecting delay on server `eth1` slows down HTTP pull requests from `cdn` to origin without altering the client's last-mile latency or bandwidth.
 - Client CPU stress runs strictly inside the client container's cgroup using stress-ng, isolating decode stalls without starving background traffic or host daemons.
 - `./labctl.sh fault reset` atomically wipes active `netem` qdiscs on origin and CDN, terminates any running stress-ng processes, and flushes temporary bypass states.
+- The crowd never crosses an access link: with the CDN egress unshaped it only loads the CDN, and `fault reset` both restores the unshaped egress and stops the crowd players.

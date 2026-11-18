@@ -1,0 +1,16 @@
+ip address add 10.0.3.10/24 dev eth0
+ip link set eth0 up
+
+# The crowd stands for the other subscribers of the same CDN edge, outside the
+# measured household. It sits on the CDN-side segment (BACKBONE, or PEERING in
+# multi-isp) and reaches the edge directly: its segments leave the CDN through
+# the same egress queue (cdn eth1) as the household's media, never through the
+# residential access link.
+#
+# Extra one-way delay on the crowd egress (requests and ACKs), so that the crowd
+# flows have residential-like RTTs instead of ~2 ms: under a shared FIFO, TCP
+# would otherwise favour them heavily. Changed at runtime with
+# './labctl.sh traffic crowd delay DELAY'.
+tc qdisc replace dev eth0 root netem delay 20ms limit 10000
+
+mkdir -p /var/log/background

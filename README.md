@@ -294,6 +294,39 @@ A target above the current access capacity intentionally saturates that link.
 The configured value is a target rate; `./labctl.sh traffic status` reports the
 traffic generator state.
 
+## Crowd: congestion outside the household
+
+The `crowd` device stands for the other subscribers of the same CDN edge. It is
+attached to the CDN-side segment (`BACKBONE`, or `PEERING` in multi-isp), so
+its traffic never touches a residential access link: it shares only the CDN
+egress towards the provider(s), `cdn eth1`, with the players. That link is
+unshaped by default, so the crowd affects a player only after
+`fault upstream` gives it a finite capacity and a queue.
+
+```bash
+# shared CDN->provider link: 30 Mb/s, drop-tail FIFO holding 100 ms (default)
+./labctl.sh fault upstream 30mbit
+./labctl.sh fault upstream 30mbit qdisc=fqcodel     # AQM; or qdisc=sfq
+./labctl.sh fault upstream off                      # back to unshaped, 2 ms
+
+# N crowd ABR players (same generator as the household background)
+./labctl.sh traffic crowd 5                         # DASH: separate cache keys
+./labctl.sh traffic crowd 5 throughput hls          # flash crowd on the same stream
+./labctl.sh traffic crowd 5 throughput dash cache 4 # de-phased by up to 4 s
+./labctl.sh traffic crowd delay 30ms                # crowd RTT (egress delay)
+./labctl.sh traffic crowd status | log | off
+
+# both at once, as used by the RCA campaigns
+./labctl.sh fault crowd 5 30mbit qdisc=fifo buffer_ms=100 delay=32ms proto=dash spread=0
+./labctl.sh fault crowd off
+```
+
+Live players fetch each segment as soon as it is published, so a synchronised
+crowd (`spread=0`) loads the shared link exactly when the measured player
+downloads; `spread=S` gives every crowd player a fixed offset in `[0, S]` s.
+`fault upstream` and `fault cdn-delay` both own the `cdn eth1` root qdisc and
+are mutually exclusive; `fault reset` clears both and stops the crowd.
+
 ## Physical fault injection & Multi-Actor RCA
 
 To support root-cause analysis (RCA) and validate causal fault attribution engines against physical testbed ground truth (avoiding mock heuristic labels), ./labctl.sh fault provides fine-grained impairment controls targeting each actor in the delivery chain:

@@ -13,7 +13,7 @@ bash -n labctl.sh docker/media-prep/prepare-media.sh \
   docker/client/check-streams.sh docker/traffic/background-traffic.sh \
   docker/rum/monitor-client.sh \
   lab/source.startup lab/server.startup lab/cdn.startup lab/isp.startup \
-  lab/home.startup lab/client.startup lab/background.startup \
+  lab/home.startup lab/client.startup lab/background.startup lab/crowd.startup \
   lab/isp/usr/local/sbin/set-access-link.sh \
   lab/home/usr/local/sbin/set-access-link.sh \
   scenarios/multi-isp/cdn.startup scenarios/multi-isp/isp2.startup \
@@ -50,7 +50,8 @@ for file in \
   lab/isp.startup \
   lab/home.startup \
   lab/client.startup \
-  lab/background.startup; do
+  lab/background.startup \
+  lab/crowd.startup; do
   test -s "$file"
 done
 
@@ -77,6 +78,17 @@ grep -q 'h264_nvenc' docker/source-gpu/start-publishers.sh
 grep -q 'scale_cuda' docker/source-gpu/start-publishers.sh
 grep -q 'DeviceRequest' docker/kathara/patch-docker-resources.py
 grep -q 'gpu-check' labctl.sh
+# crowd: other CDN subscribers on the CDN-side segment, sharing only the CDN egress (cdn eth1)
+for conf in scenarios/single-isp/lab.conf scenarios/single-isp/lab.gpu.conf; do
+  grep -q 'crowd\[0\]="BACKBONE"' "$conf"
+done
+for conf in scenarios/multi-isp/lab.conf scenarios/multi-isp/lab.gpu.conf; do
+  grep -q 'crowd\[0\]="PEERING"' "$conf"
+done
+grep -q 'CROWD_DEVICES=(crowd)' scenarios/single-isp/scenario.conf scenarios/multi-isp/scenario.conf
+grep -q '10.0.3.10/24' lab/crowd.startup
+grep -q 'fault upstream RATE' labctl.sh
+grep -q 'phase-spread' docker/traffic/hls-background-client.py
 grep -q 'up \[SCENARIO\] \[cpu|gpu\]' labctl.sh
 grep -q 'SCENARIO_CHECK_OK' labctl.sh
 grep -q 'lstart --print' labctl.sh

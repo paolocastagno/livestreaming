@@ -76,6 +76,7 @@ load_scenario() {
   HOME_DEVICES=()
   CLIENT_DEVICES=()
   BACKGROUND_DEVICES=()
+  CROWD_DEVICES=()  # optional: other CDN subscribers outside the households
   ALL_DEVICES=()
   VNC_PORTS=()
   SHAPED_PORTS=()
@@ -422,6 +423,107 @@ device_exists() {
   return 1
 }
 
+crowd_device() {
+  if [[ "${#CROWD_DEVICES[@]}" -eq 0 ]]; then
+    echo "Scenario '$(active_scenario)' has no crowd device (CROWD_DEVICES in scenario.conf)." >&2
+    exit 2
+  fi
+  printf '%s\n' "${CROWD_DEVICES[0]}"
+}
+
+rate_to_bps() {
+  [[ "$1" =~ ^([1-9][0-9]*)(kbit|mbit|gbit)$ ]] || return 1
+  case "${BASH_REMATCH[2]}" in
+    kbit) printf '%s\n' $((10#${BASH_REMATCH[1]} * 1000)) ;;
+    mbit) printf '%s\n' $((10#${BASH_REMATCH[1]} * 1000000)) ;;
+    gbit) printf '%s\n' $((10#${BASH_REMATCH[1]} * 1000000000)) ;;
+  esac
+}
+
+# Shared CDN->provider link: cdn eth1 is the egress of every household's segments and of the
+# crowd's ones. HTB at RATE, the fixed 2 ms backbone delay of cdn.startup, then the queue of the
+# shared link: drop-tail FIFO holding BUFFER_MS at RATE (default, core router), fq_codel (AQM) or
+# SFQ (per-flow fairness, as on the access links). Owns the cdn eth1 root like 'fault cdn-delay':
+# the two are mutually exclusive.
+apply_upstream() {
+  local rate=$1 qdisc=$2 buffer_ms=$3
+  local bps bytes pkts leaf
+  bps=$(rate_to_bps "$rate") || { echo "Invalid rate '$rate' (e.g. 30mbit, 2500kbit)." >&2; exit 2; }
+  [[ "$buffer_ms" =~ ^[1-9][0-9]*$ ]] || { echo "buffer_ms must be a positive integer (ms)." >&2; exit 2; }
+  bytes=$((bps / 8 * buffer_ms / 1000))
+  if ((bytes < 15140)); then bytes=15140; fi
+  pkts=$(((bytes + 1513) / 1514))
+  case "$qdisc" in
+    fifo) leaf="bfifo limit $bytes" ;;
+    fqcodel) leaf="fq_codel" ;;
+    sfq)
+      if ((pkts < 127)); then pkts=127; fi
+      leaf="sfq quantum 1514 perturb 10 limit $pkts"
+      ;;
+    *) echo "Unknown qdisc '$qdisc'. Choose fifo, fqcodel, or sfq." >&2; exit 2 ;;
+  esac
+  kathara exec --wait -d "$(lab_dir)" cdn -- sh -c "
+    tc qdisc del dev eth1 root 2>/dev/null
+    tc qdisc add dev eth1 root handle 1: htb default 10 &&
+    tc class add dev eth1 parent 1: classid 1:10 htb rate $rate ceil $rate burst 64k cburst 64k quantum 1514 &&
+    tc qdisc add dev eth1 parent 1:10 handle 10: netem delay 2ms limit 100000 &&
+    tc qdisc add dev eth1 parent 10:1 handle 20: $leaf"
+  write_client_state "all" "fault_upstream" "${rate}_${qdisc}_${buffer_ms}ms"
+  echo "upstream: SHAPED (cdn eth1 rate=$rate qdisc=$qdisc buffer=${buffer_ms}ms, $bytes B)"
+}
+
+clear_upstream() {
+  kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tc qdisc del dev eth1 root 2>/dev/null; tc qdisc add dev eth1 root netem delay 2ms'
+  write_client_state "all" "fault_upstream" "off"
+  echo "upstream: CLEARED (nominal: unshaped, 2 ms)"
+}
+
+check_crowd_players() {
+  local abr=$1 proto=$2 cache=$3 spread=$4
+  [[ "$abr" =~ ^(throughput|buffer|hybrid)$ ]] || { echo "ABR must be throughput, buffer, or hybrid." >&2; exit 2; }
+  [[ "$proto" =~ ^(dash|hls)$ ]] || { echo "Protocol must be dash or hls." >&2; exit 2; }
+  [[ "$cache" =~ ^(cache|bypass)$ ]] || { echo "Cache mode must be cache or bypass." >&2; exit 2; }
+  [[ "$spread" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "Phase spread must be seconds, e.g. 0 or 4." >&2; exit 2; }
+}
+
+# Crowd: other subscribers of the CDN edge outside every household, N headless ABR players on the
+# crowd device (same generator as the household background, see docker/traffic). With proto=dash
+# they load the shared link but not the HLS player's cache keys; proto=hls is the flash crowd of the
+# same live event (shared cache). Their segments cross only the shared cdn eth1 queue.
+crowd_traffic() {
+  local dev action=${1:-status}
+  dev=$(crowd_device)
+  case "$action" in
+    off|stop)
+      kathara exec --wait -d "$(lab_dir)" "$dev" -- /usr/local/bin/background-traffic.sh stop
+      write_client_state "all" "crowd" "off"
+      ;;
+    status)
+      kathara exec --wait -d "$(lab_dir)" "$dev" -- /usr/local/bin/background-traffic.sh status
+      echo "crowd: $(read_client_state all crowd off), egress delay $(read_client_state all crowd_delay 20ms)"
+      ;;
+    log)
+      kathara exec --wait -d "$(lab_dir)" "$dev" -- /usr/local/bin/background-traffic.sh hls-log
+      ;;
+    delay)
+      [[ "${2:-}" =~ ^[0-9]+ms$ ]] || { echo "Usage: ./labctl.sh traffic crowd delay DELAY (e.g. 30ms)" >&2; exit 2; }
+      kathara exec --wait -d "$(lab_dir)" "$dev" -- tc qdisc replace dev eth0 root netem delay "$2" limit 10000
+      write_client_state "all" "crowd_delay" "$2"
+      echo "crowd: one-way delay on the crowd egress = $2"
+      ;;
+    *)
+      [[ "$action" =~ ^[1-9][0-9]*$ ]] || {
+        echo "Usage: ./labctl.sh traffic crowd {N [ABR] [dash|hls] [cache|bypass] [PHASE_SPREAD_S]|delay DELAY|status|log|off}" >&2
+        exit 2
+      }
+      check_crowd_players "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}"
+      kathara exec --wait -d "$(lab_dir)" "$dev" -- /usr/local/bin/background-traffic.sh start-hls \
+        "$action" "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}"
+      write_client_state "all" "crowd" "hls${action}-${3:-dash}-${4:-cache}-spread${5:-0}"
+      ;;
+  esac
+}
+
 print_endpoints() {
   local i
   for ((i=0; i<${#CLIENT_DEVICES[@]}; i++)); do
@@ -496,9 +598,19 @@ Usage: ./labctl.sh COMMAND [ARGS]
   traffic DIR RATE [TARGET]    Start custom download, upload, or both traffic
   traffic hls N [ABR] [dash|hls] [bypass] [TARGET]
                                Start N competing headless ABR players
-  fault ACTION [ARGS...]       Inject/control physical faults (origin, cdn, cpu, access, traffic)
+  traffic crowd N [ABR] [dash|hls] [cache|bypass] [PHASE_SPREAD_S]
+                               Start N ABR players of other CDN subscribers
+                               (crowd device, outside every household)
+  traffic crowd {delay DELAY|status|log|off}
+  fault ACTION [ARGS...]       Inject/control physical faults (origin, cdn, cpu, access, traffic,
+                               upstream, crowd)
+  fault upstream RATE [qdisc=fifo|fqcodel|sfq] [buffer_ms=100] | off
+                               Shape the shared CDN->provider link (cdn eth1)
+  fault crowd N RATE [qdisc=..] [buffer_ms=..] [delay=..] [proto=dash|hls]
+              [cache=cache|bypass] [spread=S] [abr=..] | off
+                               Shared-link congestion by N crowd players
   rum-build [SOURCE_DIR]       Build the pinned RUM runtime image
-  traffic-deploy               Copy the traffic scripts into running background devices
+  traffic-deploy               Copy the traffic scripts into running background/crowd devices
   rum [DURATION] [INTERVAL]    Measure every client (defaults: 60s, 500ms)
   rum-cgroup CGROUP DURATION INTERVAL OUTPUT
                                Measure an arbitrary host cgroup v2 path to OUTPUT (CSV)
@@ -618,6 +730,10 @@ case "${1:-help}" in
   traffic)
     need_docker
     load_scenario "$(active_scenario)"
+    if [[ "${2:-}" == crowd ]]; then
+      crowd_traffic "${@:3}"
+      exit 0
+    fi
     traffic_target=all
     case "${2:-status}" in
       off)
@@ -658,7 +774,7 @@ case "${1:-help}" in
         traffic_target=${4:-all}
         ;;
       *)
-        echo "Unknown traffic mode '${2:-}'. Choose off, light, medium, heavy, upload, status, download RATE, both RATE, or hls N." >&2
+        echo "Unknown traffic mode '${2:-}'. Choose off, light, medium, heavy, upload, status, download RATE, both RATE, hls N, or crowd N." >&2
         exit 2
         ;;
     esac
@@ -690,6 +806,12 @@ case "${1:-help}" in
         read_client_state "all" "fault_origin_proc" "off"
         echo -n "cdn_bypass: "
         read_client_state "all" "fault_cdn_bypass" "off"
+        echo -n "upstream: "
+        read_client_state "all" "fault_upstream" "off"
+        if [[ "${#CROWD_DEVICES[@]}" -gt 0 ]]; then
+          echo -n "crowd: "
+          read_client_state "all" "crowd" "off"
+        fi
         for client in "${CLIENT_DEVICES[@]}"; do
           echo -n "$client cpu stress: "
           kathara exec --wait -d "$(lab_dir)" "$client" -- sh -c 'pgrep stress-ng >/dev/null && echo "ACTIVE (stress-ng running)" || echo "nominal (none)"'
@@ -780,6 +902,69 @@ case "${1:-help}" in
           echo "origin_proc_delay: INJECTED (request delay=$delay on cdn eth0)"
         fi
         ;;
+      upstream)
+        # Capacity and queue of the shared CDN->provider link (cdn eth1); 'off' restores the
+        # unshaped 2 ms link of cdn.startup. Options: qdisc=fifo|fqcodel|sfq buffer_ms=100.
+        if [[ "${3:-}" == off || "${3:-}" == clear ]]; then
+          clear_upstream
+        else
+          [[ -n "${3:-}" ]] || { echo "Usage: ./labctl.sh fault upstream RATE [qdisc=fifo|fqcodel|sfq] [buffer_ms=100] | off" >&2; exit 2; }
+          qdisc=fifo
+          buffer_ms=100
+          for opt in "${@:4}"; do
+            case "$opt" in
+              qdisc=*) qdisc=${opt#*=} ;;
+              buffer_ms=*) buffer_ms=${opt#*=} ;;
+              *) echo "Unknown option '$opt' for fault upstream." >&2; exit 2 ;;
+            esac
+          done
+          apply_upstream "$3" "$qdisc" "$buffer_ms"
+        fi
+        ;;
+      crowd)
+        # Congestion of the shared CDN->provider link by other subscribers of the edge, outside every
+        # household: shape cdn eth1 (as 'fault upstream') and start N crowd players. Options:
+        # qdisc/buffer_ms (shared link), delay (one-way delay on the crowd egress, i.e. crowd RTT),
+        # proto/cache/abr (crowd players), spread (phase spread at the live edge, s; 0 = synchronised).
+        if [[ "${3:-}" == off || "${3:-}" == clear ]]; then
+          crowd_traffic off
+          clear_upstream
+        else
+          [[ "${3:-}" =~ ^[1-9][0-9]*$ && -n "${4:-}" ]] || {
+            echo "Usage: ./labctl.sh fault crowd N RATE [qdisc=fifo|fqcodel|sfq] [buffer_ms=100] [delay=20ms] [proto=dash|hls] [cache=cache|bypass] [spread=0] [abr=throughput] | off" >&2
+            exit 2
+          }
+          crowd_n=$3
+          qdisc=fifo
+          buffer_ms=100
+          crowd_delay=
+          proto=dash
+          cache=cache
+          spread=0
+          abr=throughput
+          for opt in "${@:5}"; do
+            case "$opt" in
+              qdisc=*) qdisc=${opt#*=} ;;
+              buffer_ms=*) buffer_ms=${opt#*=} ;;
+              delay=*) crowd_delay=${opt#*=} ;;
+              proto=*) proto=${opt#*=} ;;
+              cache=*) cache=${opt#*=} ;;
+              spread=*) spread=${opt#*=} ;;
+              abr=*) abr=${opt#*=} ;;
+              *) echo "Unknown option '$opt' for fault crowd." >&2; exit 2 ;;
+            esac
+          done
+          check_crowd_players "$abr" "$proto" "$cache" "$spread"
+          [[ -z "$crowd_delay" || "$crowd_delay" =~ ^[0-9]+ms$ ]] || { echo "delay must be milliseconds, e.g. 30ms." >&2; exit 2; }
+          crowd_dev=$(crowd_device)
+          apply_upstream "$4" "$qdisc" "$buffer_ms"
+          # one exec for the crowd RTT and the players (the fault onset is timed by the caller)
+          kathara exec --wait -d "$(lab_dir)" "$crowd_dev" -- sh -c "${crowd_delay:+tc qdisc replace dev eth0 root netem delay $crowd_delay limit 10000 && }/usr/local/bin/background-traffic.sh start-hls $crowd_n $abr $proto $cache $spread"
+          [[ -z "$crowd_delay" ]] || write_client_state "all" "crowd_delay" "$crowd_delay"
+          write_client_state "all" "crowd" "hls${crowd_n}-${proto}-${cache}-spread${spread}"
+          echo "crowd: INJECTED (n=$crowd_n proto=$proto cache=$cache spread=${spread}s delay=${crowd_delay:-unchanged})"
+        fi
+        ;;
       cdn-purge)
         kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'rm -rf /var/cache/nginx/media/* 2>/dev/null || true'
         echo "cdn_cache: PURGED (/var/cache/nginx/media cleared)"
@@ -826,8 +1011,10 @@ case "${1:-help}" in
         echo "===== Resetting all faults to nominal ====="
         kathara exec --wait -d "$(lab_dir)" server -- tc qdisc del dev eth1 root 2>/dev/null || true
         write_client_state "all" "fault_origin" "off"
-        kathara exec --wait -d "$(lab_dir)" cdn -- tc qdisc replace dev eth1 root netem delay 2ms
+        # del + add: also removes the HTB root of 'fault upstream'/'fault crowd'
+        kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tc qdisc del dev eth1 root 2>/dev/null; tc qdisc add dev eth1 root netem delay 2ms'
         write_client_state "all" "fault_cdn_delay" "off"
+        write_client_state "all" "fault_upstream" "off"
         "$0" fault edge-delay off >/dev/null 2>&1 || true
         "$0" fault origin-proc-delay off >/dev/null 2>&1 || true
         write_client_state "all" "fault_cdn_bypass" "off"
@@ -836,11 +1023,14 @@ case "${1:-help}" in
           write_client_state "$client" "fault_cpu" "off"
         done
         "$0" traffic off all >/dev/null 2>&1 || true
+        if [[ "${#CROWD_DEVICES[@]}" -gt 0 ]]; then
+          "$0" traffic crowd off >/dev/null 2>&1 || true
+        fi
         "$0" profile 4g all >/dev/null 2>&1 || true
         echo "All faults RESET to nominal."
         ;;
       *)
-        echo "Usage: ./labctl.sh fault {status|origin-delay DELAY [JITTER]|cdn-delay DELAY|edge-delay DELAY|origin-proc-delay DELAY|cdn-purge|cdn-bypass on/off|client-cpu LOAD% [SEC]|access PROFILE|traffic PRESET|reset}" >&2
+        echo "Usage: ./labctl.sh fault {status|origin-delay DELAY [JITTER]|cdn-delay DELAY|edge-delay DELAY|origin-proc-delay DELAY|cdn-purge|cdn-bypass on/off|client-cpu LOAD% [SEC]|access PROFILE|traffic PRESET|upstream RATE [opts]|crowd N RATE [opts]|reset}" >&2
         exit 2
         ;;
     esac
@@ -854,10 +1044,10 @@ case "${1:-help}" in
     run_rum_measurement "${@:2}"
     ;;
   traffic-deploy)
-    # Hot-deploy the traffic scripts into running background devices (no lab restart).
+    # Hot-deploy the traffic scripts into running background and crowd devices (no lab restart).
     need_docker
     load_scenario "$(active_scenario)"
-    for bg in "${BACKGROUND_DEVICES[@]}"; do
+    for bg in "${BACKGROUND_DEVICES[@]}" "${CROWD_DEVICES[@]}"; do
       cid=$(client_container_id "$bg")
       docker cp "$PROJECT_DIR/docker/traffic/background-traffic.sh" "$cid:/usr/local/bin/background-traffic.sh"
       docker cp "$PROJECT_DIR/docker/traffic/hls-background-client.py" "$cid:/usr/local/bin/hls-background-client.py"

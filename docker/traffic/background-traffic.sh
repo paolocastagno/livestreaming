@@ -20,9 +20,10 @@ stop_all() {
 }
 
 start_hls() {
-  local n=$1 abr=${2:-throughput} protocol=${3:-dash} cache=${4:-cache}
+  local n=$1 abr=${2:-throughput} protocol=${3:-dash} cache=${4:-cache} spread=${5:-0}
   local extra=()
   [[ "$cache" == bypass ]] && extra=(--bypass)
+  [[ "$spread" != 0 ]] && extra+=(--phase-spread "$spread")
   nohup python3 /usr/local/bin/hls-background-client.py --n "$n" --abr "$abr" \
     --protocol "$protocol" "${extra[@]}" --server "http://$SERVER" \
     --seed "$RANDOM" --log "$LOG_DIR/hls.jsonl" \
@@ -94,7 +95,9 @@ case "${1:-status}" in
     stop_all
     sleep 0.5
     : >"$LOG_DIR/hls.jsonl"
-    start_hls "$n" "${3:-throughput}" "${4:-dash}" "${5:-cache}"
+    spread=${6:-0}
+    [[ "$spread" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "PHASE_SPREAD must be seconds, e.g. 4 or 2.5." >&2; exit 2; }
+    start_hls "$n" "${3:-throughput}" "${4:-dash}" "${5:-cache}" "$spread"
     sleep 1
     show_status
     ;;
@@ -109,7 +112,7 @@ case "${1:-status}" in
     show_status
     ;;
   *)
-    echo "Usage: background-traffic.sh start {download|upload|both} RATE | start-hls N [ABR] [dash|hls] [cache|bypass] | hls-log | stop | status" >&2
+    echo "Usage: background-traffic.sh start {download|upload|both} RATE | start-hls N [ABR] [dash|hls] [cache|bypass] [PHASE_SPREAD_S] | hls-log | stop | status" >&2
     exit 2
     ;;
 esac

@@ -11,9 +11,15 @@ typical of other video streams in the same household.  By default they use the D
 packaging, whose segment files are distinct from the HLS ones, so they do not warm the
 CDN cache for an HLS player under test.
 
+Players at the live edge request each new segment as soon as it is published, so all of
+them (and the player under test) download at the same instants of the segment cycle.
+--phase-spread S gives every worker a fixed extra wait, uniform in [0, S] s, before
+fetching a segment it had to wait for: viewers with different live latencies, same
+periodicity but de-phased bursts.  The default 0 keeps them synchronised.
+
 Usage:
   hls-background-client.py --n 3 [--abr throughput|buffer|hybrid] [--protocol dash|hls]
-                           [--bypass] [--server http://10.0.3.2] [--log FILE]
+                           [--bypass] [--phase-spread S] [--server http://10.0.3.2] [--log FILE]
 
 One JSON line per downloaded segment is appended to --log:
   {"t": unix_s, "w": worker, "rep": id, "bps": declared, "bytes": n, "dl": s, "ttfb": s, "buf": s}
@@ -213,6 +219,7 @@ def worker(idx: int, args: argparse.Namespace, log) -> None:
         print(f"[bg{idx}] manifest error: {exc}", file=sys.stderr)
         return
     safety = rnd.uniform(0.75, 0.95)
+    phase = rnd.uniform(0.0, args.phase_spread) if args.phase_spread > 0 else 0.0
     ref = src.reps[0]
     _first, last = src.available(ref)
     nxt = max(_first, last - 2)  # start 3 segments behind the live edge
@@ -231,12 +238,14 @@ def worker(idx: int, args: argparse.Namespace, log) -> None:
     while not STOP.is_set():
         try:
             # wait for the live edge
+            waited = False
             while not STOP.is_set():
                 first, last = src.available(ref)
                 if nxt < first:
                     nxt = first
                 if nxt <= last:
                     break
+                waited = True
                 STOP.wait(0.5)
                 if time.monotonic() - last_refresh > 1.0:
                     src.refresh()
@@ -244,6 +253,10 @@ def worker(idx: int, args: argparse.Namespace, log) -> None:
                 drain()
             if STOP.is_set():
                 break
+            if waited and phase > 0:  # de-phased viewer: fixed offset from the segment publication
+                STOP.wait(phase)
+                if STOP.is_set():
+                    break
             drain()
             rep = choose(src.reps, thr, buf, args.abr, safety)
             if isinstance(src, HlsSource):
@@ -292,6 +305,8 @@ def main() -> None:
     ap.add_argument("--server", default="http://10.0.3.2")
     ap.add_argument("--buffer-max", type=float, default=10.0)
     ap.add_argument("--stagger", type=float, default=1.0, help="max random start offset per worker index [s]")
+    ap.add_argument("--phase-spread", type=float, default=0.0,
+                    help="max fixed per-worker wait after a segment is published [s] (0: synchronised)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log", default="/var/log/background/hls.jsonl")
     args = ap.parse_args()
