@@ -79,12 +79,17 @@ add_output() {
   )
 }
 
-add_output 240p 150k 180k 300k 4.1
-add_output 360p 350k 420k 700k 4.1
-add_output 480p 800k 960k 1600k 4.1
-add_output 720p 2000k 2400k 4000k 4.1
-add_output 1080p 4500k 5400k 9000k 4.1
-add_output 2160p 12000k 14400k 24000k 5.1
+# Capped VBR: maxrate = 1.1 x bitrate and a VBV buffer of one second at maxrate. With the previous
+# maxrate 1.2x and bufsize 2x a 4-second segment could carry up to 1.7x the nominal bitrate (2160p
+# segments reached 19 Mbps against a declared BANDWIDTH of 13.3 Mbps), so a player whose throughput
+# estimate sat just above the top rung stalled on every peak. Now a segment is bounded by
+# (4 + 1) x maxrate / 4 = 1.375x the nominal bitrate, about 1.25x the declared BANDWIDTH.
+add_output 240p 150k 165k 165k 4.1
+add_output 360p 350k 385k 385k 4.1
+add_output 480p 800k 880k 880k 4.1
+add_output 720p 2000k 2200k 2200k 4.1
+add_output 1080p 4500k 4950k 4950k 4.1
+add_output 2160p 12000k 13200k 13200k 5.1
 
 echo "Starting one-decode, six-rendition NVENC contribution pipeline."
 echo "Input: 3840x2160 VP9 at ${FRAME_RATE} fps; aligned GOP: ${GOP_SIZE} frames."
