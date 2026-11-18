@@ -284,6 +284,9 @@ def worker(idx: int, args: argparse.Namespace, log) -> None:
                 f, l = src.available(rep)
                 if not (f <= nxt <= l):
                     src.refresh_rep(rep)
+                    f, _ = src.available(rep)
+                if nxt < f:  # the chosen variant's window is already past nxt: skip forward (live skip)
+                    nxt = f
             if rep.init_url and rep.rep_id not in inited:
                 http.get(rep.init_url)
                 inited.add(rep.rep_id)
