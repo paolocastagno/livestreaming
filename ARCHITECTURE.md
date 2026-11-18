@@ -590,7 +590,7 @@ To establish ground-truth causality for Root Cause Analysis (RCA) and validate a
 | **CDN Miss Storm** | Nginx cache disk wipe + bypass | `cdn` `/var/cache/nginx/` & HTTP header | `./labctl.sh fault cdn-purge` & `X-Force-Bypass-Cache: 1` |
 | **Access Link** | Asymmetric HTB shaper + `netem` | `isp` `eth1` (downlink) & `home` `eth0` (uplink) | `./labctl.sh fault access <profile>` |
 | **Contention Traffic** | Concurrent iperf3 flows | `background` container on HOME LAN | `./labctl.sh fault traffic <level>` |
-| **Shared-link Congestion** | HTB + FIFO/fq_codel/SFQ on the CDN egress, N crowd ABR players | `cdn` `eth1`, `crowd` container on BACKBONE/PEERING | `./labctl.sh fault crowd <n> <rate> [opts]` |
+| **Shared-link Congestion** | HTB + FIFO/fq_codel/SFQ on the CDN egress, N crowd ABR players | `cdn` `eth1`, `crowd` container on BACKBONE/PEERING | `./labctl.sh fault upstream <rate> [opts]` + `./labctl.sh traffic crowd <n> ...` (or both: `fault crowd`) |
 | **Client Host CPU** | stress-ng CPU worker pegging | Inside `client` container | `./labctl.sh fault client-cpu <load_pct> [timeout]` |
 | **Client ABR Regret** | Controller decision overrides | In-process in `ABRController` | `--inject-abr-fault reckless_upswitch` |
 

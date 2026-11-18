@@ -317,7 +317,8 @@ unshaped by default, so the crowd affects a player only after
 ./labctl.sh traffic crowd delay 30ms                # crowd RTT (egress delay)
 ./labctl.sh traffic crowd status | log | off
 
-# both at once, as used by the RCA campaigns
+# both at once (manual use; the RCA campaigns shape the link at session start
+# with 'fault upstream' and start only the players at the fault onset)
 ./labctl.sh fault crowd 5 30mbit qdisc=fifo buffer_ms=100 delay=32ms proto=dash spread=0
 ./labctl.sh fault crowd off
 ```
