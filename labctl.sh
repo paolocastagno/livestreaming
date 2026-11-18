@@ -137,6 +137,10 @@ initialize_client_state() {
     printf '%s\n' 4g >"$CLIENT_STATE_DIR/$client.profile"
     printf '%s\n' off >"$CLIENT_STATE_DIR/$client.traffic"
   done
+  # fresh lab: unshaped CDN egress (cdn.startup), crowd idle with the delay of crowd.startup
+  printf '%s\n' off >"$CLIENT_STATE_DIR/all.fault_upstream"
+  printf '%s\n' off >"$CLIENT_STATE_DIR/all.crowd"
+  printf '%s\n' 20ms >"$CLIENT_STATE_DIR/all.crowd_delay"
 }
 
 write_client_state() {
@@ -462,18 +466,32 @@ apply_upstream() {
       ;;
     *) echo "Unknown qdisc '$qdisc'. Choose fifo, fqcodel, or sfq." >&2; exit 2 ;;
   esac
-  kathara exec --wait -d "$(lab_dir)" cdn -- sh -c "
+  local out
+  out=$(kathara exec --wait -d "$(lab_dir)" cdn -- sh -c "
     tc qdisc del dev eth1 root 2>/dev/null
     tc qdisc add dev eth1 root handle 1: htb default 10 &&
     tc class add dev eth1 parent 1: classid 1:10 htb rate $rate ceil $rate burst 64k cburst 64k quantum 1514 &&
     tc qdisc add dev eth1 parent 1:10 handle 10: netem delay 2ms limit 100000 &&
-    tc qdisc add dev eth1 parent 10:1 handle 20: $leaf"
+    tc qdisc add dev eth1 parent 10:1 handle 20: $leaf
+    tc qdisc show dev eth1")
+  # a fault that is not in place would invalidate the label: check the result, not the exit status
+  if ! grep -q "qdisc htb 1: root" <<<"$out" || ! grep -q "qdisc ${leaf%% *} 20:" <<<"$out"; then
+    printf '%s\n' "$out" >&2
+    echo "upstream: FAILED, cdn eth1 is not shaped as requested" >&2
+    exit 1
+  fi
   write_client_state "all" "fault_upstream" "${rate}_${qdisc}_${buffer_ms}ms"
   echo "upstream: SHAPED (cdn eth1 rate=$rate qdisc=$qdisc buffer=${buffer_ms}ms, $bytes B)"
 }
 
 clear_upstream() {
-  kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tc qdisc del dev eth1 root 2>/dev/null; tc qdisc add dev eth1 root netem delay 2ms'
+  local out
+  out=$(kathara exec --wait -d "$(lab_dir)" cdn -- sh -c 'tc qdisc del dev eth1 root 2>/dev/null; tc qdisc add dev eth1 root netem delay 2ms; tc qdisc show dev eth1')
+  if grep -q "qdisc htb" <<<"$out" || ! grep -q "qdisc netem .*root" <<<"$out"; then
+    printf '%s\n' "$out" >&2
+    echo "upstream: FAILED to restore the unshaped cdn eth1" >&2
+    exit 1
+  fi
   write_client_state "all" "fault_upstream" "off"
   echo "upstream: CLEARED (nominal: unshaped, 2 ms)"
 }
@@ -491,7 +509,7 @@ check_crowd_players() {
 # they load the shared link but not the HLS player's cache keys; proto=hls is the flash crowd of the
 # same live event (shared cache). Their segments cross only the shared cdn eth1 queue.
 crowd_traffic() {
-  local dev action=${1:-status}
+  local dev out action=${1:-status}
   dev=$(crowd_device)
   case "$action" in
     off|stop)
@@ -517,8 +535,10 @@ crowd_traffic() {
         exit 2
       }
       check_crowd_players "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}"
-      kathara exec --wait -d "$(lab_dir)" "$dev" -- /usr/local/bin/background-traffic.sh start-hls \
-        "$action" "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}"
+      out=$(kathara exec --wait -d "$(lab_dir)" "$dev" -- /usr/local/bin/background-traffic.sh start-hls \
+        "$action" "${2:-throughput}" "${3:-dash}" "${4:-cache}" "${5:-0}")
+      printf '%s\n' "$out"
+      grep -q "hls: running" <<<"$out" || { echo "crowd: FAILED, players not running on $dev" >&2; exit 1; }
       write_client_state "all" "crowd" "hls${action}-${3:-dash}-${4:-cache}-spread${5:-0}"
       ;;
   esac
@@ -927,8 +947,8 @@ case "${1:-help}" in
         # qdisc/buffer_ms (shared link), delay (one-way delay on the crowd egress, i.e. crowd RTT),
         # proto/cache/abr (crowd players), spread (phase spread at the live edge, s; 0 = synchronised).
         if [[ "${3:-}" == off || "${3:-}" == clear ]]; then
-          crowd_traffic off
           clear_upstream
+          crowd_traffic off
         else
           [[ "${3:-}" =~ ^[1-9][0-9]*$ && -n "${4:-}" ]] || {
             echo "Usage: ./labctl.sh fault crowd N RATE [qdisc=fifo|fqcodel|sfq] [buffer_ms=100] [delay=20ms] [proto=dash|hls] [cache=cache|bypass] [spread=0] [abr=throughput] | off" >&2
@@ -959,7 +979,12 @@ case "${1:-help}" in
           crowd_dev=$(crowd_device)
           apply_upstream "$4" "$qdisc" "$buffer_ms"
           # one exec for the crowd RTT and the players (the fault onset is timed by the caller)
-          kathara exec --wait -d "$(lab_dir)" "$crowd_dev" -- sh -c "${crowd_delay:+tc qdisc replace dev eth0 root netem delay $crowd_delay limit 10000 && }/usr/local/bin/background-traffic.sh start-hls $crowd_n $abr $proto $cache $spread"
+          out=$(kathara exec --wait -d "$(lab_dir)" "$crowd_dev" -- sh -c "${crowd_delay:+tc qdisc replace dev eth0 root netem delay $crowd_delay limit 10000 && }/usr/local/bin/background-traffic.sh start-hls $crowd_n $abr $proto $cache $spread; tc qdisc show dev eth0")
+          if ! grep -q "hls: running" <<<"$out" || { [[ -n "$crowd_delay" ]] && ! grep -q "delay $crowd_delay" <<<"$out"; }; then
+            printf '%s\n' "$out" >&2
+            echo "crowd: FAILED, players or crowd delay not in place on $crowd_dev" >&2
+            exit 1
+          fi
           [[ -z "$crowd_delay" ]] || write_client_state "all" "crowd_delay" "$crowd_delay"
           write_client_state "all" "crowd" "hls${crowd_n}-${proto}-${cache}-spread${spread}"
           echo "crowd: INJECTED (n=$crowd_n proto=$proto cache=$cache spread=${spread}s delay=${crowd_delay:-unchanged})"
@@ -1023,7 +1048,7 @@ case "${1:-help}" in
           write_client_state "$client" "fault_cpu" "off"
         done
         "$0" traffic off all >/dev/null 2>&1 || true
-        if [[ "${#CROWD_DEVICES[@]}" -gt 0 ]]; then
+        if [[ "${#CROWD_DEVICES[@]}" -gt 0 && "$(read_client_state all crowd off)" != off ]]; then
           "$0" traffic crowd off >/dev/null 2>&1 || true
         fi
         "$0" profile 4g all >/dev/null 2>&1 || true
@@ -1048,7 +1073,14 @@ case "${1:-help}" in
     need_docker
     load_scenario "$(active_scenario)"
     for bg in "${BACKGROUND_DEVICES[@]}" "${CROWD_DEVICES[@]}"; do
-      cid=$(client_container_id "$bg")
+      if [[ " ${CROWD_DEVICES[*]} " == *" $bg "* ]]; then
+        cid=$(client_container_id "$bg" 2>/dev/null) || {
+          echo "$bg: not running (lab started without the crowd device), skipped"
+          continue
+        }
+      else
+        cid=$(client_container_id "$bg")
+      fi
       docker cp "$PROJECT_DIR/docker/traffic/background-traffic.sh" "$cid:/usr/local/bin/background-traffic.sh"
       docker cp "$PROJECT_DIR/docker/traffic/hls-background-client.py" "$cid:/usr/local/bin/hls-background-client.py"
       docker exec "$cid" chmod 0755 /usr/local/bin/background-traffic.sh /usr/local/bin/hls-background-client.py
